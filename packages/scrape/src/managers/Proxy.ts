@@ -8,6 +8,7 @@ import * as http from 'http';
 import * as https from 'https';
 
 import { cryptoRandomObjectId } from '@apify/utilities';
+import { ProxyCacheManager } from './ProxyCacheManager.js';
 
 export type { ProxyMode, ResolvedProxyMode };
 export { isProxyMode, getResolvedProxyMode as getResolvedProxyModeName };
@@ -614,28 +615,34 @@ export function resolveProxyMode(proxyValue: string | undefined): string[] | nul
  * Rotates through available proxies using a simple counter
  * @param proxyValue The proxy mode or custom URL
  * @param proxyTier The tier to use (0 = primary, 1 = fallback)
+ * @param requestUrl Optional request URL (currently unused)
  */
 let proxyModeRotationIndex = 0;
-export function getProxyFromMode(proxyValue: string | undefined, proxyTier: number = 0): string | null {
-    const tiered = resolveProxyModeWithFallback(proxyValue);
-    if (!tiered || tiered.length === 0) {
-        return null;
-    }
+export function getProxyFromMode(
+  proxyValue: string | undefined,
+  proxyTier: number = 0,
+  requestUrl?: string
+): string | null {
+  const tiered = resolveProxyModeWithFallback(proxyValue);
+  if (!tiered || tiered.length === 0) {
+    return null;
+  }
 
-    // Use the specified tier, or fall back to last available tier
-    const tierIndex = Math.min(proxyTier, tiered.length - 1);
-    const tier = tiered[tierIndex];
-    if (!tier) {
-        return null;
-    }
-    const proxies = tier.filter((url): url is string => url !== null);
+  // Use the specified tier, or fall back to last available tier
+  const tierIndex = Math.min(proxyTier, tiered.length - 1);
+  const tier = tiered[tierIndex];
+  if (!tier) {
+    return null;
+  }
+  const proxies = tier.filter((url): url is string => url !== null);
 
-    if (proxies.length === 0) {
-        return null;
-    }
+  if (proxies.length === 0) {
+    return null;
+  }
 
-    const proxy = proxies[proxyModeRotationIndex++ % proxies.length];
-    return proxy || null;
+  // Simple rotation
+  const proxy = proxies[proxyModeRotationIndex++ % proxies.length];
+  return proxy || null;
 }
 
 /**
@@ -704,10 +711,14 @@ function findProxyForUrl(requestUrl: string): string | null {
 }
 
 const proxyConfiguration = new ProxyConfiguration({
-    newUrlFunction: (_sessionId: string | number, options?: { request?: Request }): string | null => {
+    newUrlFunction: async (_sessionId: string | number, options?: { request?: Request; proxyTier?: number }): Promise<string | null> => {
         const requestUrl = options?.request?.url || 'unknown';
         const originalUrl = (options?.request?.userData as any)?.original_url;
         const matchUrl = originalUrl || requestUrl;
+        const retryCountRaw = Number((options?.request as any)?.retryCount);
+        const retryCount = Number.isFinite(retryCountRaw) && retryCountRaw >= 0
+            ? Math.floor(retryCountRaw)
+            : 0;
         const userDataTier = (options?.request?.userData as any)?._proxyTier;
         const proxyTierRaw = (options as any)?.proxyTier;
         const proxyTier =
@@ -721,14 +732,50 @@ const proxyConfiguration = new ProxyConfiguration({
 
             // Check if it's a proxy mode or custom URL
             if (isProxyMode(proxyValue)) {
-                const resolvedProxy = getProxyFromMode(proxyValue, proxyTier);
+                const proxyCache = ProxyCacheManager.getInstance();
+                const domain = matchUrl ? proxyCache.extractDomain(matchUrl) : null;
+                const domainEntry = domain ? await proxyCache.getDomainCacheEntry(domain) : null;
+
+                // Apply cached mode upgrade for auto mode (cross-job persistence).
+                // If a domain has already proven to require stealth, skip base attempts directly.
+                let effectiveProxyMode: ProxyMode = proxyValue;
+                if (proxyValue === 'auto' && domainEntry?.mode === 'stealth') {
+                    effectiveProxyMode = 'stealth';
+                    options.request.userData._originalProxy = options.request.userData._originalProxy ?? proxyValue;
+                    options.request.userData.options.proxy = 'stealth';
+                    log.info(`[ProxyCache] Domain ${domain} cached mode=stealth, upgrading proxy mode auto -> stealth for ${requestUrl}`);
+                }
+
+                // Prefer the last known working proxy for this domain+mode when available.
+                if (domain && (effectiveProxyMode === 'base' || effectiveProxyMode === 'stealth')) {
+                    const cachedWorkingProxy = effectiveProxyMode === 'base'
+                        ? domainEntry?.baseWorkingProxy
+                        : domainEntry?.stealthWorkingProxy;
+                    if (cachedWorkingProxy) {
+                        const isFailed = await proxyCache.isProxyFailureActive(domain, cachedWorkingProxy);
+                        if (!isFailed) {
+                            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using cached ${effectiveProxyMode} proxy: ${cachedWorkingProxy}`);
+                            return cachedWorkingProxy;
+                        }
+                        log.info(`[ProxyCache] Cached working proxy is currently failed, falling back to rotation: ${domain}@${cachedWorkingProxy}`);
+                    }
+                }
+
+                let effectiveProxyTier = proxyTier;
+
+                // Auto mode: use base tier first, retry will upgrade to stealth
+                if (effectiveProxyMode === 'auto' && retryCount >= 1) {
+                    effectiveProxyTier = 1;
+                }
+
+                const resolvedProxy = getProxyFromMode(effectiveProxyMode, effectiveProxyTier, matchUrl);
                 if (resolvedProxy) {
-                    const tierCount = getProxyTierCount(proxyValue);
-                    const tierInfo = tierCount > 1 ? ` (tier ${proxyTier}/${tierCount - 1})` : '';
-                    log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using proxy mode "${proxyValue}"${tierInfo}: ${resolvedProxy}`);
+                    const tierCount = getProxyTierCount(effectiveProxyMode);
+                    const tierInfo = tierCount > 1 ? ` (tier ${effectiveProxyTier}/${tierCount - 1})` : '';
+                    log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using proxy mode "${effectiveProxyMode}"${tierInfo}: ${resolvedProxy}`);
                     return resolvedProxy;
                 }
-                log.debug(`[PROXY] URL: ${requestUrl} → Proxy mode "${proxyValue}" resolved to no proxy`);
+                log.debug(`[PROXY] URL: ${requestUrl} → Proxy mode "${effectiveProxyMode}" resolved to no proxy`);
             } else {
                 // Custom proxy URL - no fallback allowed
                 log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using custom proxy from userData: ${proxyValue}`);

@@ -50,6 +50,81 @@ export interface CachedResult extends CachedContent {
     fromCache: boolean;
 }
 
+function normalizeText(value: unknown): string {
+    if (typeof value !== "string") {
+        return "";
+    }
+    return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeMarkdownComparableText(value: string): string {
+    return normalizeText(value)
+        .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        .replace(/[#>*_~`|]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+}
+
+function hasNonEmptyStructuredData(value: unknown): boolean {
+    if (value === null || value === undefined) {
+        return false;
+    }
+    if (Array.isArray(value)) {
+        return value.length > 0;
+    }
+    if (typeof value === "object") {
+        return Object.keys(value as Record<string, unknown>).length > 0;
+    }
+    return true;
+}
+
+function hasMeaningfulResultContent(result: any): boolean {
+    if (!result || typeof result !== "object") {
+        return false;
+    }
+
+    const plainTextSignals = [
+        result.html,
+        result.rawHtml,
+        result.text,
+        result.summary,
+        result.screenshot,
+        result["screenshot@fullPage"],
+    ];
+
+    if (plainTextSignals.some((value) => normalizeText(value).length > 0)) {
+        return true;
+    }
+
+    if (hasNonEmptyStructuredData(result.json)) {
+        return true;
+    }
+
+    if (Array.isArray(result.links) && result.links.length > 0) {
+        return true;
+    }
+
+    const markdown = normalizeText(result.markdown);
+    if (!markdown) {
+        return false;
+    }
+
+    const normalizedMarkdown = normalizeMarkdownComparableText(markdown);
+    if (!normalizedMarkdown) {
+        return false;
+    }
+
+    const title = normalizeText(result.title);
+    if (!title) {
+        return true;
+    }
+
+    const normalizedTitle = normalizeMarkdownComparableText(title);
+    return normalizedMarkdown !== normalizedTitle;
+}
+
 /**
  * Normalize URL for consistent cache key generation
  * - Removes trailing slashes
@@ -138,20 +213,30 @@ export function computeCacheKey(params: CacheKeyParams): { urlHash: string; opti
 export function shouldCache(options: any, result: any): boolean {
     // Don't cache if explicitly disabled
     if (options?.store_in_cache === false) {
+        log.debug(`[CACHE] shouldCache: false (store_in_cache=false)`);
         return false;
     }
     // Don't cache template-based requests (template output may be non-deterministic / depends on variables)
     if (options?.template_id) {
+        log.debug(`[CACHE] shouldCache: false (template_id=${options.template_id})`);
         return false;
     }
     // Don't cache if custom headers are used
     if (options?.headers && Object.keys(options.headers).length > 0) {
+        log.debug(`[CACHE] shouldCache: false (headers=${JSON.stringify(Object.keys(options.headers))})`);
         return false;
     }
     // Don't cache if actions are used
     if (options?.actions && options.actions.length > 0) {
+        log.debug(`[CACHE] shouldCache: false (actions count=${options.actions.length})`);
         return false;
     }
+    // Don't cache if extraction payload is effectively empty (e.g. title-only markdown)
+    if (!hasMeaningfulResultContent(result)) {
+        log.debug(`[CACHE] shouldCache: false (result has no meaningful content)`);
+        return false;
+    }
+    log.debug(`[CACHE] shouldCache: true`);
     return true;
 }
 

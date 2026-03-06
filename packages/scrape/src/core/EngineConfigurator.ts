@@ -6,6 +6,9 @@ import { ProgressManager } from "../managers/Progress.js";
 import { JOB_TYPE_CRAWL } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import { getOrCreateBandwidthTracker } from "./BandwidthTracker.js";
+import { CloudflareChallengeHandler } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
+import { ChallengeOrchestrator } from "../challenges/ChallengeOrchestrator.js";
+import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 
 export enum ConfigurableEngineType {
     CHEERIO = 'cheerio',
@@ -273,6 +276,16 @@ export class EngineConfigurator {
             }
         };
 
+        const challengeOrchestrator = new ChallengeOrchestrator([
+            new CloudflareChallengeHandler(),
+        ]);
+        const challengePreHook = async (args: any) => {
+            if (args?.request) {
+                (args.request as any).__anycrawlChallengeOrchestrator = challengeOrchestrator;
+            }
+            await challengeOrchestrator.onPreNavigation(args);
+        };
+
         // Pre-navigation capture hook for preNav rules
         const preNavHook = async ({ page, request }: any) => {
             try {
@@ -472,39 +485,92 @@ export class EngineConfigurator {
             }
         };
 
+        const challengePostHook = async (args: any) => {
+            await challengeOrchestrator.onPostNavigation(args);
+        };
+
         // Add browser-specific hooks to preNavigationHooks
         const existingHooks = options.preNavigationHooks || [];
-        options.preNavigationHooks = [viewportHook, bandwidthHook, adBlockingHook, requestTimeoutHook, authenticationHook, preNavHook, ...existingHooks];
+        options.preNavigationHooks = [
+            viewportHook,
+            bandwidthHook,
+            adBlockingHook,
+            requestTimeoutHook,
+            authenticationHook,
+            challengePreHook,
+            preNavHook,
+            ...existingHooks
+        ];
 
-        log.info(`[EngineConfigurator] Browser-specific hooks configured for ${engineType}: total=${options.preNavigationHooks.length}, hooks=[viewport, bandwidth, adBlocking, requestTimeout, authentication, preNav], existingHooks=${existingHooks.length}`);
+        log.info(`[EngineConfigurator] Browser hooks configured for ${engineType}: total=${options.preNavigationHooks.length}`);
+
+        const existingPostHooks = options.postNavigationHooks || [];
+        options.postNavigationHooks = [challengePostHook, ...existingPostHooks];
+        log.info(`[EngineConfigurator] Post-navigation hooks configured for ${engineType}: total=${options.postNavigationHooks.length}`);
 
         // Apply headless configuration from environment
         if (options.headless === undefined) {
             options.headless = process.env.ANYCRAWL_HEADLESS !== "false";
         }
 
-        // Configure retry behavior - disable automatic retries for blocked pages
-        options.retryOnBlocked = true;
+        // Let 403 pages reach requestHandler; do not fail early in Crawlee blocked-page detection.
+        options.retryOnBlocked = false;
 
         options.maxRequestRetries = 3;
-        options.maxSessionRotations = 3; // Enable session rotation
 
-        // Configure session pool with specific settings
+        // Configure session pool
         if (options.useSessionPool !== false) {
+            const configuredBlockedStatusCodes = Array.isArray(options.sessionPoolOptions?.blockedStatusCodes)
+                ? options.sessionPoolOptions.blockedStatusCodes
+                : [401, 403, 429];
+            const normalizedBlockedStatusCodes = configuredBlockedStatusCodes
+                .filter((code: any) => Number.isFinite(code))
+                .map((code: any) => Number(code))
+                .filter((code: number) => code !== 403);
+
             options.sessionPoolOptions = {
                 ...options.sessionPoolOptions,
-                // Specify which status codes should NOT trigger session rotation
-                // This allows us to capture these status codes while still rotating for other errors
-                blockedStatusCodes: [], // Only these codes will trigger rotation
+                // Keep blocked-status handling for other protection codes, but never block on 403.
+                blockedStatusCodes: normalizedBlockedStatusCodes,
                 // Configure session options to rotate after every error
                 sessionOptions: {
                     ...options.sessionPoolOptions?.sessionOptions,
-                    maxErrorScore: 1, // Rotate sessions after every error
+                    maxErrorScore: options.sessionPoolOptions?.sessionOptions?.maxErrorScore ?? 1,
                 },
             };
-
-
+            log.info(`[EngineConfigurator] SessionPool blockedStatusCodes for ${engineType}: [${normalizedBlockedStatusCodes.join(", ")}] (403 excluded)`);
         }
+        const isTimeoutLikeError = (error: Error): boolean => {
+            const errorName = error?.name || (error as any)?.constructor?.name;
+            return errorName === "TimeoutError";
+        };
+
+        // Proxy-related errors that might be temporary
+        const temporaryProxyErrors = [
+            'ERR_PROXY_CONNECTION_FAILED',
+            'ERR_TUNNEL_CONNECTION_FAILED',
+            'ERR_PROXY_AUTH_FAILED',
+            'ERR_NEED_TO_RETRY',
+            'ERR_SOCKS_CONNECTION_FAILED'
+        ];
+
+        // Helper function to map error to FailureReason
+        const mapToFailureReason = (msg: string, err?: Error): 'cloudflare_challenge' | 'http_error' | 'timeout' | 'blocked' | 'proxy_error' => {
+            if (msg.includes('cloudflare') || msg.includes('CF_') || msg.includes('ANYCRAWL_PROXY_ACTION_UPGRADE_TO_STEALTH')) {
+                return 'cloudflare_challenge';
+            }
+            if (msg.includes('403') || msg.includes('blocked')) {
+                return 'blocked';
+            }
+            if (temporaryProxyErrors.some(err => msg.includes(err)) || msg.includes('proxy')) {
+                return 'proxy_error';
+            }
+            if ((err && isTimeoutLikeError(err)) || msg.toLowerCase().includes('timeout')) {
+                return 'timeout';
+            }
+            return 'http_error';
+        };
+
         // Configure how errors are evaluated
         options.errorHandler = async (context: any, error: Error) => {
             log.debug(`Error handler triggered: ${error.message}`);
@@ -517,23 +583,70 @@ export class EngineConfigurator {
 
             // Check error type and determine retry strategy
             const errorMessage = error.message || '';
+            const requestUrl = context?.request?.url || 'unknown';
 
-            // Handle 403 errors - allow retry with session rotation (up to 3 times)
-            // The refresh logic in requestHandler will attempt to recover before retry
-            if (errorMessage.includes('blocked status code: 403') || errorMessage.includes('403')) {
-                log.info('403 error detected, waiting 10 seconds before retry with session rotation');
-                log.debug('403 error: waiting completed, allowing retry with session rotation (refresh will be attempted in requestHandler)');
-                return true; // Retry with new session (up to maxSessionRotations = 3)
+            // Record failure to ProxyCacheManager for ALL proxy modes (base, stealth, auto)
+            const proxyMode = context?.request?.userData?.options?.proxy;
+            if (proxyMode === 'auto' || proxyMode === 'base' || proxyMode === 'stealth') {
+                const proxyCache = ProxyCacheManager.getInstance();
+                const domain = proxyCache.extractDomain(requestUrl);
+                if (domain) {
+                    const reason = mapToFailureReason(errorMessage, error);
+
+                    // Get the actual proxy URL used for this request
+                    const proxyUrl = context?.proxyInfo?.url || 'unknown';
+
+                    // Record both domain-level and proxy-level failures
+                    proxyCache.recordDomainFailure(domain, proxyMode, reason).catch(() => {
+                        // Ignore cache recording errors
+                    });
+                    if (proxyUrl !== 'unknown') {
+                        proxyCache.recordProxyFailure(domain, proxyUrl, reason).catch(() => {
+                            // Ignore cache recording errors
+                        });
+                    }
+                }
             }
 
-            // Proxy-related errors that might be temporary
-            const temporaryProxyErrors = [
-                'ERR_PROXY_CONNECTION_FAILED',
-                'ERR_TUNNEL_CONNECTION_FAILED',
-                'ERR_PROXY_AUTH_FAILED',
-                'ERR_NEED_TO_RETRY',
-                'ERR_SOCKS_CONNECTION_FAILED'
-            ];
+            if (
+                errorMessage.includes("ANYCRAWL_PROXY_ACTION_UPGRADE_TO_STEALTH")
+                || errorMessage.includes("ANYCRAWL_PROXY_UPGRADE_TO_STEALTH")
+            ) {
+                if (context?.request) {
+                    context.request.noRetry = false;
+                }
+                log.info(`Proxy upgrade marker detected, retrying with stealth proxy for ${context?.request?.url || "unknown url"}`);
+                return true;
+            }
+
+            if (
+                errorMessage.includes("ANYCRAWL_PROXY_ACTION_ROTATE_PROXY")
+                || errorMessage.includes("ANYCRAWL_STEALTH_RETRY_WITH_NEW_PROXY")
+            ) {
+                if (context?.request) {
+                    context.request.noRetry = false;
+                }
+                log.info(`Challenge retry marker detected, retrying with rotated proxy for ${context?.request?.url || "unknown url"}`);
+                return true;
+            }
+
+            if (errorMessage.includes("Received blocked status code: 403")) {
+                if (context?.request) {
+                    context.request.noRetry = true;
+                }
+                log.info(`403 blocked-status session error detected, disabling retry for ${context?.request?.url || "unknown url"}`);
+                return false;
+            }
+
+            // Timeout-like errors should fail fast and never retry.
+            // Crawlee ignores the return value of errorHandler, so we need to set request.noRetry explicitly.
+            if (isTimeoutLikeError(error)) {
+                if (context?.request) {
+                    context.request.noRetry = true;
+                }
+                log.info(`Timeout-like error detected, disabling retry for ${context?.request?.url || "unknown url"}`);
+                return false;
+            }
 
             if (temporaryProxyErrors.some(err => errorMessage.includes(err))) {
                 log.debug('Temporary proxy error detected, allowing retry with session rotation');
@@ -547,7 +660,6 @@ export class EngineConfigurator {
     }
 
     private static configurePuppeteer(options: any): void {
-        // Puppeteer-specific configurations can be added here
         options.browserPoolOptions = {
             useFingerprints: true,
             fingerprintOptions: {
@@ -559,7 +671,6 @@ export class EngineConfigurator {
     }
 
     private static configurePlaywright(options: any): void {
-        // Playwright-specific configurations can be added here
         options.browserPoolOptions = {
             useFingerprints: true,
             fingerprintOptions: {
