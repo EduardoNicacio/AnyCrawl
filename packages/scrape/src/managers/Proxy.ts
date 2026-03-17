@@ -351,6 +351,8 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
     async newUrl(sessionId?: string | number, options?: TieredProxyOptions): Promise<string | undefined> {
         if (typeof sessionId === 'number') sessionId = `${sessionId}`;
 
+        await ensureProxyConfigFresh();
+
         // First try newUrlFunction
         if (this.newUrlFunction) {
             const result = await this._callNewUrlFunction(sessionId, { request: options?.request });
@@ -436,66 +438,114 @@ interface ProxyConfig {
  * Or use the provided proxy-config.example.json as a template.
  */
 
-// Parse proxy configuration from file specified by environment variable
+// Proxy config TTL: how long to cache before reloading (default 30 min)
+const PROXY_CONFIG_TTL_MS = Math.max(0, Number.parseInt(process.env.ANYCRAWL_PROXY_CONFIG_TTL_MS ?? '1800000', 10) || 1800000);
 let proxyConfig: ProxyConfig | null = null;
+let proxyConfigFetchedAt = 0;
+let proxyConfigSource: string | null = null;
+let refreshInProgress: Promise<void> | null = null;
 
-function loadProxyConfigFromFile(pathOrFileUrl: string): void {
+function isHttpSource(s: string): boolean {
+    return s.startsWith('http://') || s.startsWith('https://');
+}
+
+function loadProxyConfigFromFile(source: string): void {
     try {
-        const pathToRead = resolve(pathOrFileUrl);
+        const pathToRead = resolve(source);
         const configContent = readFileSync(pathToRead, 'utf-8');
         const parsed: ProxyConfig = JSON.parse(configContent);
         proxyConfig = parsed;
+        proxyConfigFetchedAt = Date.now();
         if (proxyConfig?.rules) {
             log.info(`Loaded proxy configuration from ${pathToRead} with ${proxyConfig.rules.length} rules`);
         }
     } catch (error) {
-        log.error('Failed to load proxy configuration from file', {
-            configPath: pathOrFileUrl,
-            error
-        });
+        log.error('Failed to load proxy configuration from file', { configPath: source, error });
     }
 }
 
-function loadProxyConfigFromHttp(urlStr: string): void {
-    try {
-        const urlObj = new URL(urlStr);
-        const lib = urlObj.protocol === 'https:' ? https : http;
-        const req = lib.request(urlObj, (res) => {
-            if (res.statusCode && res.statusCode >= 400) {
-                log.error(`Failed to load proxy configuration from URL: HTTP ${res.statusCode}`, { url: urlStr });
-                res.resume();
-                return;
-            }
-            let data = '';
-            res.setEncoding('utf8');
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-                try {
-                    const parsed: ProxyConfig = JSON.parse(data);
-                    proxyConfig = parsed;
-                    if (proxyConfig?.rules) {
-                        log.info(`Loaded proxy configuration from ${urlStr} with ${proxyConfig.rules.length} rules`);
-                    }
-                } catch (e) {
-                    log.error('Failed to parse proxy configuration JSON from URL', { url: urlStr, error: e });
+function loadProxyConfigFromHttp(urlStr: string): Promise<void> {
+    return new Promise((resolvePromise, rejectPromise) => {
+        try {
+            const urlObj = new URL(urlStr);
+            const lib = urlObj.protocol === 'https:' ? https : http;
+            const req = lib.request(urlObj, (res) => {
+                if (res.statusCode && res.statusCode >= 400) {
+                    log.error(`Failed to load proxy configuration from URL: HTTP ${res.statusCode}`, { url: urlStr });
+                    res.resume();
+                    rejectPromise(new Error(`HTTP ${res.statusCode}`));
+                    return;
                 }
+                let data = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    try {
+                        const parsed: ProxyConfig = JSON.parse(data);
+                        proxyConfig = parsed;
+                        proxyConfigFetchedAt = Date.now();
+                        if (proxyConfig?.rules) {
+                            log.info(`Loaded proxy configuration from ${urlStr} with ${proxyConfig.rules.length} rules`);
+                        }
+                        resolvePromise();
+                    } catch (e) {
+                        log.error('Failed to parse proxy configuration JSON from URL', { url: urlStr, error: e });
+                        rejectPromise(e);
+                    }
+                });
             });
-        });
-        req.on('error', (e) => {
-            log.error('Failed to load proxy configuration from URL', { url: urlStr, error: e });
-        });
-        req.end();
-    } catch (error) {
-        log.error('Invalid ANYCRAWL_PROXY_CONFIG URL', { url: urlStr, error });
+            req.on('error', (e) => {
+                log.error('Failed to load proxy configuration from URL', { url: urlStr, error: e });
+                rejectPromise(e);
+            });
+            req.end();
+        } catch (error) {
+            log.error('Invalid ANYCRAWL_PROXY_CONFIG URL', { url: urlStr, error });
+            rejectPromise(error);
+        }
+    });
+}
+
+async function refreshProxyConfig(): Promise<void> {
+    if (!proxyConfigSource) return;
+    try {
+        if (isHttpSource(proxyConfigSource)) {
+            await loadProxyConfigFromHttp(proxyConfigSource);
+        } else {
+            loadProxyConfigFromFile(proxyConfigSource);
+        }
+    } catch {
+        // Errors already logged in load functions; keep existing cache
     }
 }
 
+// Initial load: file sources loaded immediately; HTTP sources loaded lazily
+// on first ensureProxyConfigFresh() to avoid fire-and-forget race conditions.
 if (process.env.ANYCRAWL_PROXY_CONFIG) {
-    const cfg = process.env.ANYCRAWL_PROXY_CONFIG.trim();
-    if (cfg.startsWith('http://') || cfg.startsWith('https://')) {
-        loadProxyConfigFromHttp(cfg);
-    } else {
-        loadProxyConfigFromFile(cfg);
+    proxyConfigSource = process.env.ANYCRAWL_PROXY_CONFIG.trim();
+    if (!isHttpSource(proxyConfigSource)) {
+        loadProxyConfigFromFile(proxyConfigSource);
+    }
+}
+
+/**
+ * Ensure proxy config is fresh (within TTL). If expired, reload from source.
+ * For file sources the reload is synchronous; for HTTP sources concurrent
+ * callers coalesce onto a single in-flight request.
+ */
+async function ensureProxyConfigFresh(): Promise<void> {
+    if (!proxyConfigSource) return;
+    const isFresh = proxyConfigFetchedAt > 0 && PROXY_CONFIG_TTL_MS > 0 && Date.now() - proxyConfigFetchedAt < PROXY_CONFIG_TTL_MS;
+    if (isFresh) return;
+    if (refreshInProgress) {
+        await refreshInProgress;
+        return;
+    }
+    refreshInProgress = refreshProxyConfig();
+    try {
+        await refreshInProgress;
+    } finally {
+        refreshInProgress = null;
     }
 }
 
