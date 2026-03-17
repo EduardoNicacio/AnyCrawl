@@ -87,12 +87,3 @@ export class Logger {
     }
 }
 
-// No default singleton export to avoid duplicate declarations in Jest ESM env
-
-export const logger = {
-    warn: (...args: unknown[]) => { if (process.env.NODE_ENV !== 'test') console.warn(...args); },
-    info: (...args: unknown[]) => { if (process.env.NODE_ENV !== 'test') console.info(...args); },
-    error: (...args: unknown[]) => { if (process.env.NODE_ENV !== 'test') console.error(...args); },
-};
-
-

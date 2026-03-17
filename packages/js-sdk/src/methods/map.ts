@@ -1,6 +1,7 @@
-import { AxiosInstance, AxiosResponse } from 'axios';
-import { ApiResponse, MapRequest, MapResult, MapLink } from '../types.js';
+import type { AxiosInstance, AxiosResponse } from 'axios';
+import type { MapRequest, MapResult, MapLink } from '../types.js';
 import { Logger } from '../logger.js';
+import { unwrapApiResponse } from '../utils/index.js';
 const log = new Logger();
 
 /**
@@ -12,14 +13,7 @@ const log = new Logger();
  */
 export async function map(client: AxiosInstance, input: MapRequest): Promise<MapResult> {
     log.debug('Calling /v1/map');
-    const response: AxiosResponse<ApiResponse<MapLink[]>> = await client.post('/v1/map', input);
-    const payload: ApiResponse<MapLink[]> = response.data;
-
-    if (!payload.success) {
-        throw new Error((payload as any).error || 'Map request failed');
-    }
-
-    return {
-        links: payload.data || []
-    };
+    const response: AxiosResponse<unknown> = await client.post('/v1/map', input);
+    const links = unwrapApiResponse<MapLink[]>(response.data, 'Map request failed');
+    return { links: links || [] };
 }

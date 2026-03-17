@@ -172,7 +172,7 @@ export class SearchController {
                                 include_tags: scrapeOptions.include_tags,
                                 exclude_tags: scrapeOptions.exclude_tags,
                                 proxy: scrapeOptions.proxy,
-                                only_main_content: (scrapeOptions as any).only_main_content,
+                                only_main_content: scrapeOptions.only_main_content,
                                 extract_source: scrapeOptions.extract_source,
                                 ocr_options: scrapeOptions.ocr_options,
                                 wait_for: scrapeOptions.wait_for,

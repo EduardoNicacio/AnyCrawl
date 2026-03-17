@@ -14,6 +14,7 @@ const scrapeOptionsInputSchema = baseSchema
         wait_for_selector: true,
         include_tags: true,
         exclude_tags: true,
+        only_main_content: true,
         json_options: true,
         extract_source: true,
         ocr_options: true,

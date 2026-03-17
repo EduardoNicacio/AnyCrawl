@@ -124,7 +124,8 @@
                         "type": "string",
                         "format": "uri"
                       }
-                    ]
+                    ],
+                    "default": "auto"
                   },
                   "formats": {
                     "type": "array",
@@ -287,6 +288,10 @@
                     ],
                     "default": "markdown"
                   },
+                  "ocr_options": {
+                    "type": "boolean",
+                    "default": false
+                  },
                   "max_age": {
                     "type": "number",
                     "minimum": 0
@@ -313,6 +318,7 @@
                             "format": "uri"
                           }
                         ],
+                        "default": "auto",
                         "description": "Proxy URL to route the request through (e.g., http://user:pass@host:port)"
                       },
                       "formats": {
@@ -1541,6 +1547,7 @@
                         "format": "uri"
                       }
                     ],
+                    "default": "auto",
                     "description": "Proxy URL to route the request through (e.g., http://user:pass@host:port)"
                   },
                   "formats": {
@@ -2160,6 +2167,7 @@
                             "format": "uri"
                           }
                         ],
+                        "default": "auto",
                         "description": "Proxy URL to route the request through (e.g., http://user:pass@host:port)"
                       },
                       "formats": {
@@ -2282,6 +2290,12 @@
                           }
                         ],
                         "description": "Wait for one or multiple selectors before extraction (browser engines only)"
+                      },
+                      "only_main_content": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Only extract main content, removing headers, footers, navigation, etc.",
+                        "example": true
                       },
                       "max_age": {
                         "type": "number",

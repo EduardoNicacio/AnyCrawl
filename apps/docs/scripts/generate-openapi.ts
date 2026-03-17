@@ -204,7 +204,7 @@ const scrapeOptionsForOpenAPI: any = (() => {
     );
 })();
 
-// Search enrichment scrape options (includes wait_until; omits only_main_content)
+// Search enrichment scrape options (includes wait_until and only_main_content)
 const searchScrapeOptionsForOpenAPI: any = (() => {
     const picked: any = (scrapeInputSchema as any).pick({
         proxy: true,
@@ -213,6 +213,7 @@ const searchScrapeOptionsForOpenAPI: any = (() => {
         wait_for: true,
         wait_until: true,
         wait_for_selector: true,
+        only_main_content: true,
         max_age: true,
         store_in_cache: true,
         include_tags: true,
@@ -262,6 +263,11 @@ const searchScrapeOptionsForOpenAPI: any = (() => {
             exclude_tags: withOpenApi((picked as any).shape.exclude_tags, {
                 description: 'Exclude elements with these CSS selectors',
                 example: []
+            }),
+            only_main_content: withOpenApi((picked as any).shape.only_main_content, {
+                description: 'Only extract main content, removing headers, footers, navigation, etc.',
+                example: true,
+                default: true
             }),
             json_options: withOpenApi((jsonOptionsSchemaForDocs as any).optional(), {
                 description: 'Advanced: JSON extraction options (optional). Leave empty to omit from request.'

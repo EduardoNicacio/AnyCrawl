@@ -85,3 +85,5 @@ AY_*.md
 logs/security/
 AGENTS.md
 CLAUDE.md
+
+.pnpm-store

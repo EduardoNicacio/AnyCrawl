@@ -14,15 +14,56 @@ const mockedAxios = axios as { create: jest.Mock };
 describe('AnyCrawlClient', () => {
     let client: AnyCrawlClientType;
     let mockAxiosInstance: any;
+    let storedErrorHandler: ((err: any) => never) | null = null;
 
     beforeEach(() => {
+        const delegateGet = jest.fn();
+        const delegatePost = jest.fn();
+        const delegateDelete = jest.fn();
+        const delegatePut = jest.fn();
+        const delegatePatch = jest.fn();
+        const wrapRejection = (p: Promise<any>) =>
+            p.catch((err: any) => {
+                if (storedErrorHandler) {
+                    try {
+                        storedErrorHandler(err);
+                    } catch (e) {
+                        throw e;
+                    }
+                }
+                throw err;
+            });
+        const wrapGet = jest.fn().mockImplementation((...args: any[]) =>
+            wrapRejection(Promise.resolve(delegateGet(...args)))
+        );
+        const wrapPost = jest.fn().mockImplementation((...args: any[]) =>
+            wrapRejection(Promise.resolve(delegatePost(...args)))
+        );
+        const wrapDelete = jest.fn().mockImplementation((...args: any[]) =>
+            wrapRejection(Promise.resolve(delegateDelete(...args)))
+        );
+        const wrapPut = jest.fn().mockImplementation((...args: any[]) =>
+            wrapRejection(Promise.resolve(delegatePut(...args)))
+        );
+        const wrapPatch = jest.fn().mockImplementation((...args: any[]) =>
+            wrapRejection(Promise.resolve(delegatePatch(...args)))
+        );
+        Object.assign(wrapGet, { mockResolvedValueOnce: delegateGet.mockResolvedValueOnce.bind(delegateGet), mockRejectedValueOnce: delegateGet.mockRejectedValueOnce.bind(delegateGet) });
+        Object.assign(wrapPost, { mockResolvedValueOnce: delegatePost.mockResolvedValueOnce.bind(delegatePost), mockRejectedValueOnce: delegatePost.mockRejectedValueOnce.bind(delegatePost) });
+        Object.assign(wrapDelete, { mockResolvedValueOnce: delegateDelete.mockResolvedValueOnce.bind(delegateDelete), mockRejectedValueOnce: delegateDelete.mockRejectedValueOnce.bind(delegateDelete) });
+        Object.assign(wrapPut, { mockResolvedValueOnce: delegatePut.mockResolvedValueOnce.bind(delegatePut), mockRejectedValueOnce: delegatePut.mockRejectedValueOnce.bind(delegatePut) });
+        Object.assign(wrapPatch, { mockResolvedValueOnce: delegatePatch.mockResolvedValueOnce.bind(delegatePatch), mockRejectedValueOnce: delegatePatch.mockRejectedValueOnce.bind(delegatePatch) });
         mockAxiosInstance = {
-            get: jest.fn(),
-            post: jest.fn(),
-            delete: jest.fn(),
+            get: wrapGet,
+            post: wrapPost,
+            delete: wrapDelete,
+            put: wrapPut,
+            patch: wrapPatch,
             interceptors: {
                 response: {
-                    use: jest.fn(),
+                    use: jest.fn((_ok: any, err: any) => {
+                        storedErrorHandler = err;
+                    }),
                 },
             },
         };
@@ -55,6 +96,15 @@ describe('AnyCrawlClient', () => {
                 timeout: 300000,
             });
         });
+
+        it('should not set onAuthFailure when constructor receives undefined', () => {
+            const c = new AnyCrawlClient('key', 'https://api.test.com', undefined);
+            c.setAuthFailureCallback(jest.fn());
+            mockAxiosInstance.get.mockRejectedValueOnce({
+                response: { status: 401, data: { error: 'Auth' } },
+            });
+            expect(c).toBeDefined();
+        });
     });
 
     describe('healthCheck', () => {
@@ -71,7 +121,7 @@ describe('AnyCrawlClient', () => {
         it('should handle health check errors', async () => {
             mockAxiosInstance.get.mockRejectedValueOnce(new Error('Network error'));
 
-            await expect(client.healthCheck()).rejects.toThrow('Network error');
+            await expect(client.healthCheck()).rejects.toThrow(/Network error/);
         });
     });
 
@@ -122,17 +172,26 @@ describe('AnyCrawlClient', () => {
             const options: ScrapeRequest = {
                 url: 'https://example.com',
                 engine: 'playwright',
+                template_id: 'tpl-1',
+                variables: { foo: 'bar' },
                 proxy: 'http://proxy.example.com:8080',
                 formats: ['markdown', 'html', 'screenshot'],
                 timeout: 60000,
                 retry: true,
                 wait_for: 3000,
+                wait_until: 'networkidle',
+                wait_for_selector: '.content',
                 include_tags: ['article', 'main'],
                 exclude_tags: ['nav', 'footer'],
+                only_main_content: true,
                 json_options: {
                     schema: { type: 'object' },
                     user_prompt: 'Extract article content',
                 },
+                extract_source: true,
+                ocr_options: { lang: 'en' },
+                max_age: 3600,
+                store_in_cache: true,
             };
 
             await client.scrape(options);
@@ -217,6 +276,9 @@ describe('AnyCrawlClient', () => {
             const options: CrawlRequest = {
                 url: 'https://example.com',
                 engine: 'playwright',
+                template_id: 'tpl-1',
+                variables: { key: 'val' },
+                scrape_paths: ['/blog/*'],
                 // Scrape options should live inside scrape_options for crawl
                 scrape_options: {
                     proxy: 'http://proxy.example.com:8080',
@@ -226,6 +288,10 @@ describe('AnyCrawlClient', () => {
                     include_tags: ['article'],
                     exclude_tags: ['nav'],
                     json_options: { schema: { type: 'object' } },
+                    extract_source: true,
+                    ocr_options: { lang: 'en' },
+                    max_age: 3600,
+                    store_in_cache: true,
                 },
                 // Retry remains a top-level crawl option
                 retry: true,
@@ -238,7 +304,30 @@ describe('AnyCrawlClient', () => {
 
             await client.createCrawl(options);
 
-            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/crawl', options);
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/crawl', expect.any(Object));
+            const callArg = mockAxiosInstance.post.mock.calls[0][1];
+            expect(callArg).toMatchObject({
+                url: 'https://example.com',
+                engine: 'playwright',
+                exclude_paths: ['/admin/*'],
+                include_paths: ['/blog/*'],
+                max_depth: 5,
+                strategy: 'same-domain',
+                limit: 50,
+                retry: true,
+            });
+            expect(callArg.scrape_options).toMatchObject({
+                proxy: 'http://proxy.example.com:8080',
+                formats: ['markdown', 'html'],
+                timeout: 60000,
+                wait_for: 3000,
+                include_tags: ['article'],
+                exclude_tags: ['nav'],
+                json_options: { schema: { type: 'object' } },
+            });
+            expect(callArg.template_id).toBe('tpl-1');
+            expect(callArg.variables).toEqual({ key: 'val' });
+            expect(callArg.scrape_paths).toEqual(['/blog/*']);
         });
 
         it('should throw error when crawl creation fails', async () => {
@@ -334,6 +423,39 @@ describe('AnyCrawlClient', () => {
 
             expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v1/crawl/test-crawl-id?skip=50');
         });
+
+        it('should use credits_used when creditsUsed is missing', async () => {
+            const mockResponse = {
+                data: {
+                    status: 'completed',
+                    total: 10,
+                    completed: 10,
+                    credits_used: 5,
+                    data: [],
+                },
+            };
+            mockAxiosInstance.get.mockResolvedValueOnce(mockResponse);
+
+            const result = await client.getCrawlResults('test-crawl-id');
+            expect(result.creditsUsed).toBe(5);
+        });
+
+        it('should throw raw.message when raw.error is missing', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: false, message: 'Custom failure' },
+            });
+
+            await expect(client.getCrawlResults('job-1')).rejects.toThrow('Custom failure');
+        });
+
+        it('should normalize invalid skip to 0', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { status: 'completed', total: 0, completed: 0, data: [] },
+            });
+
+            await client.getCrawlResults('job-1', -10);
+            expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v1/crawl/job-1?skip=0');
+        });
     });
 
     describe('cancelCrawl', () => {
@@ -416,6 +538,8 @@ describe('AnyCrawlClient', () => {
                 pages: 2,
                 lang: 'en',
                 country: 'US',
+                template_id: 'tpl-1',
+                variables: { foo: 'bar' },
                 scrape_options: { engine: 'playwright' },
                 safe_search: 1,
             };
@@ -443,12 +567,536 @@ describe('AnyCrawlClient', () => {
         });
     });
 
+    describe('map', () => {
+        it('should map a URL successfully', async () => {
+            const mockResponse = {
+                data: {
+                    success: true,
+                    data: [
+                        { url: 'https://example.com/page1', title: 'Page 1' },
+                        { url: 'https://example.com/page2', title: 'Page 2' },
+                    ],
+                },
+            };
+            mockAxiosInstance.post.mockResolvedValueOnce(mockResponse);
+
+            const result = await client.map({
+                url: 'https://example.com',
+                limit: 100,
+            });
+
+            expect(result.links).toHaveLength(2);
+            expect(result.links[0]).toEqual({ url: 'https://example.com/page1', title: 'Page 1' });
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/map', {
+                url: 'https://example.com',
+                limit: 100,
+            });
+        });
+
+        it('should map with all options', async () => {
+            const mockResponse = { data: { success: true, data: [] } };
+            mockAxiosInstance.post.mockResolvedValueOnce(mockResponse);
+
+            await client.map({
+                url: 'https://example.com',
+                limit: 50,
+                include_subdomains: true,
+                ignore_sitemap: true,
+            });
+
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/map', {
+                url: 'https://example.com',
+                limit: 50,
+                include_subdomains: true,
+                ignore_sitemap: true,
+            });
+        });
+
+        it('should throw error when map fails', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: false, error: 'Map request failed' },
+            });
+
+            await expect(client.map({ url: 'https://example.com' })).rejects.toThrow('Map request failed');
+        });
+
+        it('should return empty links when API returns null data', async () => {
+            const mockResponse = {
+                data: {
+                    success: true,
+                    data: null,
+                },
+            };
+            mockAxiosInstance.post.mockResolvedValueOnce(mockResponse);
+
+            const result = await client.map({ url: 'https://example.com' });
+
+            expect(result.links).toEqual([]);
+        });
+    });
+
+    describe('crawl (blocking)', () => {
+        it('should create crawl, poll until completed, and aggregate results', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: { job_id: 'job-1', status: 'created', message: 'Created' } },
+            });
+            mockAxiosInstance.get
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        data: {
+                            job_id: 'job-1',
+                            status: 'pending',
+                            start_time: '2024-01-01T00:00:00Z',
+                            expires_at: '2024-01-02T00:00:00Z',
+                            credits_used: 0,
+                            total: 2,
+                            completed: 0,
+                            failed: 0,
+                        },
+                    },
+                })
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        data: {
+                            job_id: 'job-1',
+                            status: 'completed',
+                            start_time: '2024-01-01T00:00:00Z',
+                            expires_at: '2024-01-02T00:00:00Z',
+                            credits_used: 2,
+                            total: 2,
+                            completed: 2,
+                            failed: 0,
+                        },
+                    },
+                });
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    status: 'completed',
+                    total: 2,
+                    completed: 2,
+                    credits_used: 2,
+                    data: [
+                        { url: 'https://example.com/1', title: 'Page 1' },
+                        { url: 'https://example.com/2', title: 'Page 2' },
+                    ],
+                },
+            });
+
+            const result = await client.crawl(
+                { url: 'https://example.com', engine: 'cheerio', limit: 10 },
+                1,
+                5000
+            );
+
+            expect(result.job_id).toBe('job-1');
+            expect(result.status).toBe('completed');
+            expect(result.total).toBe(2);
+            expect(result.data).toHaveLength(2);
+            expect(result.data[0]).toEqual({ url: 'https://example.com/1', title: 'Page 1' });
+        });
+
+        it('should throw when crawl fails', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: { job_id: 'job-1', status: 'created', message: 'Created' } },
+            });
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: {
+                        job_id: 'job-1',
+                        status: 'failed',
+                        start_time: '2024-01-01T00:00:00Z',
+                        expires_at: '2024-01-02T00:00:00Z',
+                        credits_used: 0,
+                        total: 0,
+                        completed: 0,
+                        failed: 0,
+                    },
+                },
+            });
+
+            await expect(
+                client.crawl({ url: 'https://example.com', engine: 'cheerio' }, 1)
+            ).rejects.toThrow('Crawl failed (job_id=job-1)');
+        });
+
+        it('should throw when crawl times out', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: { job_id: 'job-1', status: 'created', message: 'Created' } },
+            });
+            mockAxiosInstance.get.mockResolvedValue({
+                data: {
+                    success: true,
+                    data: {
+                        job_id: 'job-1',
+                        status: 'pending',
+                        start_time: '2024-01-01T00:00:00Z',
+                        expires_at: '2024-01-02T00:00:00Z',
+                        credits_used: 0,
+                        total: 10,
+                        completed: 0,
+                        failed: 0,
+                    },
+                },
+            });
+
+            await expect(
+                client.crawl({ url: 'https://example.com', engine: 'cheerio' }, 1, 200)
+            ).rejects.toThrow(/Crawl timed out after 200ms \(job_id=job-1\)/);
+        });
+
+        it('should handle crawl results page with empty data array', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: { job_id: 'job-1', status: 'created', message: 'Created' } },
+            });
+            mockAxiosInstance.get
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        data: {
+                            job_id: 'job-1',
+                            status: 'completed',
+                            start_time: '',
+                            expires_at: '',
+                            credits_used: 0,
+                            total: 0,
+                            completed: 0,
+                            failed: 0,
+                        },
+                    },
+                })
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        status: 'completed',
+                        total: 0,
+                        completed: 0,
+                        credits_used: 0,
+                        data: [],
+                    },
+                });
+
+            const result = await client.crawl(
+                { url: 'https://example.com', engine: 'cheerio', limit: 10 },
+                1
+            );
+
+            expect(result.data).toHaveLength(0);
+            expect(result.total).toBe(0);
+        });
+
+        it('should return partial data when crawl is cancelled', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: { job_id: 'job-1', status: 'created', message: 'Created' } },
+            });
+            mockAxiosInstance.get
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        data: {
+                            job_id: 'job-1',
+                            status: 'cancelled',
+                            start_time: '2024-01-01T00:00:00Z',
+                            expires_at: '2024-01-02T00:00:00Z',
+                            credits_used: 1,
+                            total: 5,
+                            completed: 1,
+                            failed: 0,
+                        },
+                    },
+                })
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        status: 'cancelled',
+                        total: 5,
+                        completed: 1,
+                        credits_used: 1,
+                        data: [{ url: 'https://example.com/1', title: 'Page 1' }],
+                    },
+                });
+
+            const result = await client.crawl(
+                { url: 'https://example.com', engine: 'cheerio', limit: 10 },
+                1
+            );
+
+            expect(result.job_id).toBe('job-1');
+            expect(result.status).toBe('cancelled');
+            expect(result.data).toHaveLength(1);
+            expect(result.data[0]).toEqual({ url: 'https://example.com/1', title: 'Page 1' });
+        });
+    });
+
+    describe('scheduled tasks', () => {
+        it('should create scheduled task', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: { task_id: 'task-1', next_execution_at: '2024-01-02T09:00:00Z' },
+                },
+            });
+
+            const result = await client.createScheduledTask({
+                name: 'Daily scrape',
+                cron_expression: '0 9 * * *',
+                task_type: 'scrape',
+                task_payload: { url: 'https://example.com', engine: 'cheerio' },
+            });
+
+            expect(result.task_id).toBe('task-1');
+            expect(result.next_execution_at).toBe('2024-01-02T09:00:00Z');
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/scheduled-tasks', expect.any(Object));
+        });
+
+        it('should list scheduled tasks', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: [{ task_id: 'task-1', name: 'Test' }],
+                },
+            });
+
+            const tasks = await client.listScheduledTasks();
+            expect(tasks).toHaveLength(1);
+            expect(tasks[0]).toEqual({ task_id: 'task-1', name: 'Test' });
+            expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v1/scheduled-tasks');
+        });
+
+        it('should get and update scheduled task', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: { task_id: 'task-1', name: 'Test' } },
+            });
+            mockAxiosInstance.put.mockResolvedValueOnce({
+                data: { success: true, data: { task_id: 'task-1', cron_expression: '0 10 * * *' } },
+            });
+
+            const task = await client.getScheduledTask('task-1');
+            expect(task.task_id).toBe('task-1');
+
+            const updated = await client.updateScheduledTask('task-1', { cron_expression: '0 10 * * *' });
+            expect(updated.cron_expression).toBe('0 10 * * *');
+        });
+
+        it('should pause and resume scheduled task', async () => {
+            mockAxiosInstance.patch.mockResolvedValueOnce({ data: { success: true } });
+            mockAxiosInstance.patch.mockResolvedValueOnce({ data: { success: true } });
+
+            await client.pauseScheduledTask('task-1', 'Maintenance');
+            await client.resumeScheduledTask('task-1');
+
+            expect(mockAxiosInstance.patch).toHaveBeenCalledWith(
+                '/v1/scheduled-tasks/task-1/pause',
+                { reason: 'Maintenance' }
+            );
+            expect(mockAxiosInstance.patch).toHaveBeenCalledWith('/v1/scheduled-tasks/task-1/resume');
+        });
+
+        it('should pause scheduled task without reason', async () => {
+            mockAxiosInstance.patch.mockResolvedValueOnce({ data: { success: true } });
+
+            await client.pauseScheduledTask('task-1');
+
+            expect(mockAxiosInstance.patch).toHaveBeenCalledWith(
+                '/v1/scheduled-tasks/task-1/pause',
+                {}
+            );
+        });
+
+        it('should get task executions without params', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: [], meta: { limit: 20, offset: 0 } },
+            });
+
+            const { data, meta } = await client.getScheduledTaskExecutions('task-1');
+            expect(data).toEqual([]);
+            expect(meta).toEqual({ limit: 20, offset: 0 });
+            expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v1/scheduled-tasks/task-1/executions');
+        });
+
+        it('should delete scheduled task', async () => {
+            mockAxiosInstance.delete.mockResolvedValueOnce({ data: { success: true } });
+
+            await client.deleteScheduledTask('task-1');
+
+            expect(mockAxiosInstance.delete).toHaveBeenCalledWith('/v1/scheduled-tasks/task-1');
+        });
+
+        it('should get task executions and cancel execution', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: [{ execution_id: 'exec-1' }], meta: { limit: 10, offset: 0 } },
+            });
+            mockAxiosInstance.delete.mockResolvedValueOnce({ data: { success: true } });
+
+            const { data } = await client.getScheduledTaskExecutions('task-1', { limit: 10, offset: 0 });
+            expect(data).toHaveLength(1);
+            expect(data[0]).toEqual({ execution_id: 'exec-1' });
+
+            await client.cancelScheduledTaskExecution('task-1', 'exec-1');
+            expect(mockAxiosInstance.delete).toHaveBeenCalledWith(
+                '/v1/scheduled-tasks/task-1/executions/exec-1'
+            );
+        });
+    });
+
+    describe('webhooks', () => {
+        it('should create webhook', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: {
+                        webhook_id: 'wh-1',
+                        secret: 'secret-xyz',
+                        message: 'Webhook created',
+                    },
+                },
+            });
+
+            const result = await client.createWebhook({
+                name: 'My webhook',
+                webhook_url: 'https://example.com/webhook',
+                event_types: ['scrape.completed'],
+            });
+
+            expect(result.webhook_id).toBe('wh-1');
+            expect(result.secret).toBe('secret-xyz');
+        });
+
+        it('should list and get webhook', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: [{ webhook_id: 'wh-1', name: 'Test' }] },
+            });
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: { webhook_id: 'wh-1', name: 'Test' } },
+            });
+
+            const webhooks = await client.listWebhooks();
+            expect(webhooks).toHaveLength(1);
+
+            const webhook = await client.getWebhook('wh-1');
+            expect(webhook.webhook_id).toBe('wh-1');
+        });
+
+        it('should update and delete webhook', async () => {
+            mockAxiosInstance.put.mockResolvedValueOnce({ data: { success: true } });
+            mockAxiosInstance.delete.mockResolvedValueOnce({ data: { success: true } });
+
+            await client.updateWebhook('wh-1', { event_types: ['crawl.completed'] });
+            await client.deleteWebhook('wh-1');
+
+            expect(mockAxiosInstance.put).toHaveBeenCalledWith('/v1/webhooks/wh-1', {
+                event_types: ['crawl.completed'],
+            });
+            expect(mockAxiosInstance.delete).toHaveBeenCalledWith('/v1/webhooks/wh-1');
+        });
+
+        it('should get webhook deliveries without params', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: [], meta: {} },
+            });
+
+            const { data } = await client.getWebhookDeliveries('wh-1');
+            expect(data).toEqual([]);
+            expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v1/webhooks/wh-1/deliveries');
+        });
+
+        it('should default to empty array when deliveries data is null', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: null },
+            });
+
+            const { data } = await client.getWebhookDeliveries('wh-1');
+            expect(data).toEqual([]);
+        });
+
+        it('should get deliveries, test, activate, deactivate, replay', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: [{ delivery_id: 'd1', status: 'failed' }],
+                    meta: { limit: 20, offset: 0 },
+                },
+            });
+            mockAxiosInstance.post.mockResolvedValueOnce({ data: { success: true } });
+            mockAxiosInstance.put.mockResolvedValueOnce({ data: { success: true } });
+            mockAxiosInstance.put.mockResolvedValueOnce({ data: { success: true } });
+            mockAxiosInstance.post.mockResolvedValueOnce({ data: { success: true } });
+
+            const { data } = await client.getWebhookDeliveries('wh-1', { limit: 20, status: 'failed' });
+            expect(data).toHaveLength(1);
+
+            await client.testWebhook('wh-1');
+            await client.activateWebhook('wh-1');
+            await client.deactivateWebhook('wh-1');
+            await client.replayWebhookDelivery('wh-1', 'd1');
+
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/webhooks/wh-1/test');
+            expect(mockAxiosInstance.put).toHaveBeenCalledWith('/v1/webhooks/wh-1/activate');
+            expect(mockAxiosInstance.put).toHaveBeenCalledWith('/v1/webhooks/wh-1/deactivate');
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/v1/webhooks/wh-1/deliveries/d1/replay');
+        });
+
+        it('should get webhook events', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: {
+                        event_types: ['scrape.completed', 'crawl.completed'],
+                        categories: { scrape: ['scrape.completed'] },
+                    },
+                },
+            });
+
+            const events = await client.getWebhookEvents();
+            expect(events.event_types).toContain('scrape.completed');
+            expect(events.categories).toEqual({ scrape: ['scrape.completed'] });
+            expect(mockAxiosInstance.get).toHaveBeenCalledWith('/v1/webhook-events');
+        });
+
+        it('should get webhook events with null payload defaults', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: null },
+            });
+
+            const events = await client.getWebhookEvents();
+            expect(events.event_types).toEqual([]);
+            expect(events.categories).toEqual({});
+        });
+    });
+
+    describe('getCrawlResults error', () => {
+        it('should throw when raw.success is false', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: false, error: 'Failed to get crawl results' },
+            });
+
+            await expect(client.getCrawlResults('job-1')).rejects.toThrow('Failed to get crawl results');
+        });
+
+        it('should throw when raw is null', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({ data: null });
+
+            await expect(client.getCrawlResults('job-1')).rejects.toThrow('Failed to get crawl results');
+        });
+
+        it('should use fallback when raw has success false but no error or message', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: false },
+            });
+
+            await expect(client.getCrawlResults('job-1')).rejects.toThrow('Failed to get crawl results');
+        });
+    });
+
     describe('error handling', () => {
         it('should handle network errors', async () => {
             const networkError = new Error('Network error');
             mockAxiosInstance.get.mockRejectedValueOnce(networkError);
 
-            await expect(client.healthCheck()).rejects.toThrow('Network error');
+            await expect(client.healthCheck()).rejects.toThrow(/Network error/);
         });
 
         it('should handle API errors with response', async () => {
@@ -502,6 +1150,217 @@ describe('AnyCrawlClient', () => {
             mockAxiosInstance.get.mockRejectedValueOnce(otherError);
 
             await expect(client.healthCheck()).rejects.toThrow('Request error: Other error');
+        });
+
+        it('should invoke onAuthFailure on 401 and throw auth error', async () => {
+            const onAuthFailure = jest.fn();
+            const clientWithCallback = new AnyCrawlClient('key', 'https://api.test.com', onAuthFailure);
+            mockAxiosInstance.get.mockRejectedValueOnce({
+                response: { status: 401, data: { error: 'Invalid API key' } },
+            });
+
+            await expect(clientWithCallback.healthCheck()).rejects.toThrow('Authentication failed: Invalid API key');
+            expect(onAuthFailure).toHaveBeenCalledTimes(1);
+        });
+
+        it('should throw on 401 without invoking when onAuthFailure is not set', async () => {
+            const c = new AnyCrawlClient('key', 'https://api.test.com');
+            mockAxiosInstance.get.mockRejectedValueOnce({
+                response: { status: 401, data: { error: 'Invalid API key' } },
+            });
+
+            await expect(c.healthCheck()).rejects.toThrow('Authentication failed: Invalid API key');
+        });
+
+        it('should invoke onAuthFailure on 403 and throw auth error', async () => {
+            const onAuthFailure = jest.fn();
+            const clientWithCallback = new AnyCrawlClient('key', 'https://api.test.com', onAuthFailure);
+            mockAxiosInstance.get.mockRejectedValueOnce({
+                response: { status: 403, data: { error: 'Forbidden' } },
+            });
+
+            await expect(clientWithCallback.healthCheck()).rejects.toThrow('Authentication failed: Forbidden');
+            expect(onAuthFailure).toHaveBeenCalledTimes(1);
+        });
+
+        it('should throw specialized message for 402 with current_credits', async () => {
+            mockAxiosInstance.get.mockRejectedValueOnce({
+                response: {
+                    status: 402,
+                    data: { error: 'Insufficient credits', current_credits: 0 },
+                },
+            });
+
+            await expect(client.healthCheck()).rejects.toThrow(
+                'Payment required: Insufficient credits. current_credits=0'
+            );
+        });
+
+        it('should throw Unknown request error when error has no response, no request, and is not Error', async () => {
+            mockAxiosInstance.get.mockRejectedValueOnce({ someProp: 1 });
+
+            await expect(client.healthCheck()).rejects.toThrow('Unknown request error');
+        });
+    });
+
+    describe('setAuthFailureCallback', () => {
+        it('should allow setting callback after construction and invoke on 401', async () => {
+            const onAuthFailure = jest.fn();
+            const c = new AnyCrawlClient('key', 'https://api.test.com');
+            c.setAuthFailureCallback(onAuthFailure);
+            mockAxiosInstance.get.mockRejectedValueOnce({
+                response: { status: 401, data: { error: 'Expired' } },
+            });
+
+            await expect(c.healthCheck()).rejects.toThrow('Authentication failed: Expired');
+            expect(onAuthFailure).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('scrape engine default', () => {
+        it('should use playwright when engine is omitted', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: {
+                    success: true,
+                    data: {
+                        url: 'https://example.com',
+                        status: 'completed',
+                        jobId: 'j1',
+                        title: '',
+                        html: '',
+                        markdown: '',
+                        metadata: [],
+                        timestamp: '',
+                    },
+                },
+            });
+
+            await client.scrape({ url: 'https://example.com', engine: undefined as any });
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+                '/v1/scrape',
+                expect.objectContaining({ engine: 'playwright' })
+            );
+        });
+    });
+
+    describe('search branches', () => {
+        it('should pass timeRange and sources when provided', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: [] },
+            });
+
+            await client.search({
+                query: 'q',
+                timeRange: 'week',
+                sources: 'news',
+            });
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+                '/v1/search',
+                expect.objectContaining({ query: 'q', timeRange: 'week', sources: 'news' })
+            );
+        });
+
+        it('should not add scrape_options when engine is missing', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: [] },
+            });
+
+            await client.search({
+                query: 'q',
+                scrape_options: { formats: ['markdown'] } as any,
+            });
+            const callArg = mockAxiosInstance.post.mock.calls[0][1];
+            expect(callArg.scrape_options).toBeUndefined();
+        });
+    });
+
+    describe('crawl pagination', () => {
+        it('should aggregate multiple pages when next is present', async () => {
+            mockAxiosInstance.post.mockResolvedValueOnce({
+                data: { success: true, data: { job_id: 'job-1', status: 'created', message: 'Created' } },
+            });
+            mockAxiosInstance.get
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        data: {
+                            job_id: 'job-1',
+                            status: 'pending',
+                            start_time: '',
+                            expires_at: '',
+                            credits_used: 0,
+                            total: 3,
+                            completed: 0,
+                            failed: 0,
+                        },
+                    },
+                })
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        data: {
+                            job_id: 'job-1',
+                            status: 'completed',
+                            start_time: '',
+                            expires_at: '',
+                            credits_used: 3,
+                            total: 3,
+                            completed: 3,
+                            failed: 0,
+                        },
+                    },
+                })
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        status: 'completed',
+                        total: 3,
+                        completed: 3,
+                        credits_used: 3,
+                        data: [{ url: 'https://example.com/1' }, { url: 'https://example.com/2' }],
+                        next: 'https://api.test.com/v1/crawl/job-1?skip=2',
+                    },
+                })
+                .mockResolvedValueOnce({
+                    data: {
+                        success: true,
+                        status: 'completed',
+                        total: 3,
+                        completed: 3,
+                        credits_used: 3,
+                        data: [{ url: 'https://example.com/3' }],
+                    },
+                });
+
+            const result = await client.crawl(
+                { url: 'https://example.com', engine: 'cheerio', limit: 10 },
+                1
+            );
+
+            expect(result.data).toHaveLength(3);
+            expect(result.data[0]).toEqual({ url: 'https://example.com/1' });
+            expect(result.data[1]).toEqual({ url: 'https://example.com/2' });
+            expect(result.data[2]).toEqual({ url: 'https://example.com/3' });
+        });
+    });
+
+    describe('webhooks getWebhookDeliveries params', () => {
+        it('should pass status, from, to when provided', async () => {
+            mockAxiosInstance.get.mockResolvedValueOnce({
+                data: { success: true, data: [], meta: {} },
+            });
+
+            await client.getWebhookDeliveries('wh-1', {
+                limit: 20,
+                offset: 0,
+                status: 'failed',
+                from: '2024-01-01',
+                to: '2024-01-31',
+            });
+
+            expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+                '/v1/webhooks/wh-1/deliveries?limit=20&offset=0&status=failed&from=2024-01-01&to=2024-01-31'
+            );
         });
     });
 });

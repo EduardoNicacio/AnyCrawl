@@ -99,6 +99,13 @@ describe('Logger', () => {
             );
         });
 
+        it('should stringify non-string messages', () => {
+            testLogger.info({ key: 'value' });
+            expect(consoleSpy).toHaveBeenCalledWith(
+                expect.stringContaining('{"key":"value"}')
+            );
+        });
+
         it('should not log info messages when level is higher', () => {
             const warnLogger = new Logger(LogLevel.WARN);
             warnLogger.info('Test info message');
@@ -222,5 +229,74 @@ describe('Logger', () => {
         });
     });
 
-    // Default logger instance tests removed to avoid importing singleton across ESM in Jest
+    describe('coerceLogLevelFromEnv (via Logger constructor)', () => {
+        const originalLogLevel = process.env.LOG_LEVEL;
+
+        afterEach(() => {
+            if (originalLogLevel !== undefined) {
+                process.env.LOG_LEVEL = originalLogLevel;
+            } else {
+                delete process.env.LOG_LEVEL;
+            }
+        });
+
+        it('should use DEBUG when LOG_LEVEL=debug', () => {
+            process.env.LOG_LEVEL = 'debug';
+            const logger = new Logger();
+            logger.debug('msg');
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[DEBUG]'));
+        });
+
+        it('should use INFO when LOG_LEVEL=info', () => {
+            process.env.LOG_LEVEL = 'info';
+            const logger = new Logger();
+            logger.debug('msg');
+            expect(consoleSpy).not.toHaveBeenCalled();
+            logger.info('msg');
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[INFO]'));
+        });
+
+        it('should use WARN when LOG_LEVEL=warn', () => {
+            process.env.LOG_LEVEL = 'warn';
+            const logger = new Logger();
+            logger.info('msg');
+            expect(consoleSpy).not.toHaveBeenCalled();
+            logger.warn('msg');
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[WARN]'));
+        });
+
+        it('should use WARN when LOG_LEVEL=warning', () => {
+            process.env.LOG_LEVEL = 'warning';
+            const logger = new Logger();
+            logger.info('msg');
+            expect(consoleSpy).not.toHaveBeenCalled();
+            logger.warn('msg');
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[WARN]'));
+        });
+
+        it('should use ERROR when LOG_LEVEL=error', () => {
+            process.env.LOG_LEVEL = 'error';
+            const logger = new Logger();
+            logger.warn('msg');
+            expect(consoleSpy).not.toHaveBeenCalled();
+            logger.error('msg');
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR]'));
+        });
+
+        it('should default to INFO when LOG_LEVEL is invalid or empty', () => {
+            process.env.LOG_LEVEL = 'invalid';
+            const logger = new Logger();
+            logger.debug('msg');
+            expect(consoleSpy).not.toHaveBeenCalled();
+            logger.info('msg');
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[INFO]'));
+        });
+
+        it('should default to INFO when LOG_LEVEL is unset', () => {
+            delete process.env.LOG_LEVEL;
+            const logger = new Logger();
+            logger.debug('msg');
+            expect(consoleSpy).not.toHaveBeenCalled();
+        });
+    });
 });

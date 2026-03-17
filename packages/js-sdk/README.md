@@ -107,15 +107,22 @@ await client.scrape({
     url: "https://example.com",
     engine,
     // Optional:
+    template_id: "my-template",
+    variables: { key: "value" },
     proxy: "http://user:pass@host:port",
     formats,
     timeout: 60_000,
     retry: true,
     wait_for: 3000,
+    wait_for_selector: ".content",
+    only_main_content: true,
     include_tags: ["article", "main"],
     exclude_tags: ["nav", "footer"],
     json_options: { user_prompt: "Extract title", schema: { type: "object" } },
     extract_source: "markdown", // or "html"
+    ocr_options: false,
+    max_age: 86_400_000,
+    store_in_cache: true,
 });
 ```
 
@@ -127,12 +134,15 @@ Returns either a success object with content or a failure with `error`.
 const job = await client.createCrawl({
     url: "https://site.com/docs",
     engine: "playwright",
+    template_id: "my-template",
+    variables: { section: "api" },
     max_depth: 5,
     strategy: "same-domain",
     limit: 100,
-    scrape_options: { formats: ["markdown"] },
     include_paths: ["/docs/*"],
     exclude_paths: ["/admin/*"],
+    scrape_paths: ["/docs/*"], // Only scrape content from these paths
+    scrape_options: { formats: ["markdown"] },
 });
 
 const status = await client.getCrawlStatus(job.job_id);
@@ -142,7 +152,7 @@ const page = await client.getCrawlResults(job.job_id, 0);
 
 ### crawl(input, pollIntervalSeconds = 2, timeoutMs?)
 
-Convenience wrapper that creates a crawl, polls status until it completes, and returns aggregated results of all pages. Throws on failed/cancelled jobs or when the timeout is reached.
+Convenience wrapper that creates a crawl, polls status until it completes, and returns aggregated results of all pages. Throws on failed jobs or timeout; returns partial aggregated data when cancelled.
 
 ```ts
 // Type signature
@@ -170,13 +180,13 @@ try {
     console.log(aggregated.total, aggregated.completed);
     console.log(aggregated.data.length, "pages aggregated");
 } catch (err) {
-    // Handles API/network/auth errors, job failed/cancelled, or timeout
+    // Handles API/network/auth errors, job failed, or timeout
     console.error(err);
 }
 ```
 
 - Returns: `CrawlAndWaitResult` with `job_id`, `status`, `total`, `completed`, `creditsUsed`, and aggregated `data`.
-- Polling states: waits until `completed`; throws on `failed` or `cancelled`.
+- Polling states: waits until `completed`; throws on `failed`; returns partial data when `cancelled`.
 - Use `getCrawlStatus`/`getCrawlResults` if you prefer manual pagination/progress.
 
 ### search(input)
@@ -190,6 +200,10 @@ await client.search({
     pages: 2,
     lang: "en",
     country: "US",
+    timeRange: "week",
+    sources: "web",
+    template_id: "search-template",
+    variables: {},
     scrape_options: { engine: "cheerio", formats: ["markdown"] },
     safe_search: 1,
 });
@@ -213,11 +227,97 @@ Discovers all URLs from a website using multiple sources:
 
 Returns `MapResult` with `links` array containing `{ url, title?, description? }` objects.
 
+### Scheduled Tasks
+
+```ts
+// Create
+const created = await client.createScheduledTask({
+    name: "Daily scrape",
+    cron_expression: "0 9 * * *",
+    timezone: "Asia/Shanghai",
+    task_type: "scrape",
+    task_payload: { url: "https://example.com", engine: "cheerio", formats: ["markdown"] },
+    concurrency_mode: "skip",
+    max_executions_per_day: 1,
+});
+// created.task_id, created.next_execution_at
+
+// List, get, update, delete
+const tasks = await client.listScheduledTasks();
+const task = await client.getScheduledTask(created.task_id);
+await client.updateScheduledTask(created.task_id, { cron_expression: "0 10 * * *" });
+await client.pauseScheduledTask(created.task_id, "Maintenance");
+await client.resumeScheduledTask(created.task_id);
+await client.deleteScheduledTask(created.task_id);
+
+// Executions
+const { data } = await client.getScheduledTaskExecutions(created.task_id, { limit: 10, offset: 0 });
+await client.cancelScheduledTaskExecution(created.task_id, executionId);
+```
+
+### Webhooks
+
+```ts
+// Create
+const webhook = await client.createWebhook({
+    name: "My webhook",
+    webhook_url: "https://your-server.com/webhook",
+    event_types: ["scrape.completed", "crawl.completed"],
+    scope: "all",
+});
+// webhook.webhook_id, webhook.secret (save secret - shown only once)
+
+// List, get, update, delete
+const webhooks = await client.listWebhooks();
+const w = await client.getWebhook(webhook.webhook_id);
+await client.updateWebhook(webhook.webhook_id, { event_types: ["scrape.completed"] });
+await client.deleteWebhook(webhook.webhook_id);
+
+// Deliveries, test, activate/deactivate
+const { data } = await client.getWebhookDeliveries(webhook.webhook_id, { limit: 20, status: "failed" });
+await client.testWebhook(webhook.webhook_id);
+await client.activateWebhook(webhook.webhook_id);
+await client.deactivateWebhook(webhook.webhook_id);
+await client.replayWebhookDelivery(webhook.webhook_id, deliveryId);
+
+// Supported event types
+const events = await client.getWebhookEvents();
+// events.event_types, events.categories
+```
+
 Notes:
 
-- scrape has no `scrape_options`.
-- crawl only accepts nested `scrape_options`; top-level only allows crawl strategy fields and optional `retry`.
-- search supports optional `scrape_options`; when provided, it must include its `engine`.
+- Scrape options live at top-level; crawl accepts nested `scrape_options` only; top-level only allows crawl strategy fields and optional `retry`.
+- search supports optional `scrape_options`; when provided without `engine`, it is omitted (no per-result scrape enrichment; API defaults to playwright when enrichment is used).
+
+## Running E2E tests
+
+Live integration tests hit the real AnyCrawl API and consume credits. They are **not** included in the default `pnpm test` or `pnpm test:coverage` runs.
+
+### Prerequisites
+
+- A valid `ANYCRAWL_API_KEY`
+- Set `ANYCRAWL_RUN_LIVE=1` to opt in (dual gate prevents accidental execution in CI)
+- (Optional) `ANYCRAWL_BASE_URL` to test against a self-hosted instance (defaults to `https://api.anycrawl.dev`)
+
+### Run
+
+```bash
+# Inline env vars
+ANYCRAWL_API_KEY=sk-xxx ANYCRAWL_RUN_LIVE=1 pnpm --filter @anycrawl/js-sdk test:e2e
+
+# Or configure in root .env and run:
+pnpm --filter @anycrawl/js-sdk test:e2e
+```
+
+The test suite is organized in tiers by credit cost:
+
+| Tier | Tests | Credit cost |
+|------|-------|-------------|
+| 1 | healthCheck, scrape (cheerio), map | Zero / low |
+| 2 | Multi-engine scrape, search, createCrawl + status | Moderate |
+| 3 | Blocking crawl, cancelCrawl, full pagination flow | Higher |
+| Error | Invalid API key | Zero |
 
 ## Error handling
 
@@ -239,6 +339,7 @@ Notes:
 
 ## API surface
 
+**Core**
 - `healthCheck(): Promise<{ status: string }>`
 - `setAuthFailureCallback(cb: () => void): void`
 - `scrape(input: ScrapeRequest): Promise<ScrapeResult>`
@@ -249,5 +350,29 @@ Notes:
 - `cancelCrawl(jobId: string): Promise<{ job_id: string; status: string }>`
 - `search(input: SearchRequest): Promise<SearchResult[]>`
 - `map(input: MapRequest): Promise<MapResult>`
+
+**Scheduled Tasks**
+- `createScheduledTask(input): Promise<ScheduledTaskCreateResponse>`
+- `listScheduledTasks(): Promise<ScheduledTask[]>`
+- `getScheduledTask(taskId): Promise<ScheduledTask>`
+- `updateScheduledTask(taskId, input): Promise<ScheduledTask>`
+- `pauseScheduledTask(taskId, reason?): Promise<void>`
+- `resumeScheduledTask(taskId): Promise<void>`
+- `deleteScheduledTask(taskId): Promise<void>`
+- `getScheduledTaskExecutions(taskId, params?): Promise<ScheduledTaskExecutionsResponse>`
+- `cancelScheduledTaskExecution(taskId, executionId): Promise<void>`
+
+**Webhooks**
+- `createWebhook(input): Promise<WebhookCreateResponse>`
+- `listWebhooks(): Promise<Webhook[]>`
+- `getWebhook(webhookId): Promise<Webhook>`
+- `updateWebhook(webhookId, input): Promise<void>`
+- `deleteWebhook(webhookId): Promise<void>`
+- `getWebhookDeliveries(webhookId, params?): Promise<WebhookDeliveriesResponse>`
+- `testWebhook(webhookId): Promise<void>`
+- `activateWebhook(webhookId): Promise<void>`
+- `deactivateWebhook(webhookId): Promise<void>`
+- `replayWebhookDelivery(webhookId, deliveryId): Promise<void>`
+- `getWebhookEvents(): Promise<WebhookEventsResponse>`
 
 Type definitions are exported from `@anycrawl/js-sdk` for TypeScript users.

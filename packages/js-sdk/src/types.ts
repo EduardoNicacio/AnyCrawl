@@ -30,6 +30,12 @@ export type ProxyMode = 'auto' | 'base' | 'stealth';
  */
 export type ResolvedProxyMode = 'base' | 'stealth' | 'custom';
 
+/** Selector or object form for wait_for_selector (Playwright/Puppeteer only) */
+export type WaitForSelector =
+    | string
+    | { selector: string; timeout?: number; state?: 'attached' | 'visible' | 'hidden' | 'detached' }
+    | ({ selector: string; timeout?: number; state?: 'attached' | 'visible' | 'hidden' | 'detached' } | string)[];
+
 export type ScrapeOptionsInput = {
     /**
      * Proxy mode or custom proxy URL.
@@ -44,10 +50,16 @@ export type ScrapeOptionsInput = {
     retry?: boolean;
     wait_for?: number;
     wait_until?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+    /** Selector(s) to wait for before extraction (browser engines only) */
+    wait_for_selector?: WaitForSelector;
     include_tags?: string[];
     exclude_tags?: string[];
+    /** When true, filter to main content only; when false, preserve full page structure */
+    only_main_content?: boolean;
     json_options?: JsonOptions;
     extract_source?: ExtractSource;
+    /** Enable OCR for markdown images */
+    ocr_options?: boolean;
 
     /**
      * Cache max age in milliseconds.
@@ -67,6 +79,10 @@ export type ScrapeOptionsInput = {
 export type ScrapeRequest = {
     url: string;
     engine: Engine;
+    /** Template ID to use (merges with template defaults) */
+    template_id?: string;
+    /** Template variables for URL/option substitution */
+    variables?: Record<string, any>;
 } & ScrapeOptionsInput;
 
 export type ScrapeResultSuccess = {
@@ -104,6 +120,8 @@ export type CrawlOptions = {
     retry?: boolean;
     exclude_paths?: string[];
     include_paths?: string[];
+    /** Paths to scrape content from; only matching URLs get content extracted */
+    scrape_paths?: string[];
     max_depth?: number;
     strategy?: 'all' | 'same-domain' | 'same-hostname' | 'same-origin';
     limit?: number;
@@ -113,6 +131,10 @@ export type CrawlOptions = {
 export type CrawlRequest = {
     url: string;
     engine: Engine;
+    /** Template ID to use */
+    template_id?: string;
+    /** Template variables for URL/option substitution */
+    variables?: Record<string, any>;
 } & CrawlOptions; // scrape options must be nested under scrape_options
 
 export type CrawlJobResponse = {
@@ -143,16 +165,27 @@ export type CrawlResultsResponse = {
     data: any[];
 };
 
+export type SearchEngine = 'google' | 'searxng' | 'ac-engine';
+
 export type SearchRequest = {
-    engine?: 'google';
+    engine?: SearchEngine;
     query: string;
     limit?: number;
     offset?: number;
     pages?: number;
     lang?: any;
     country?: any;
+    /** Time range filter: day | week | month | year */
+    timeRange?: 'day' | 'week' | 'month' | 'year';
+    /** Search source: web | images | news (SearXNG) */
+    sources?: 'web' | 'images' | 'news';
     scrape_options?: (Omit<ScrapeOptionsInput, 'retry'> & { engine: Engine });
+    /** 0: off, 1: medium, 2: high, null: default (Google only) */
     safe_search?: number | null;
+    /** Template ID to use */
+    template_id?: string;
+    /** Template variables */
+    variables?: Record<string, any>;
 };
 
 export type SearchResult = {
@@ -189,4 +222,145 @@ export type MapRequest = {
 
 export type MapResult = {
     links: MapLink[];
+};
+
+// Scheduled Tasks
+export type ScheduledTaskType = 'scrape' | 'crawl' | 'search' | 'template';
+export type ConcurrencyMode = 'skip' | 'queue';
+
+export type CreateScheduledTaskRequest = {
+    name: string;
+    description?: string | null;
+    cron_expression: string;
+    timezone?: string;
+    task_type: ScheduledTaskType;
+    task_payload: Record<string, any>;
+    concurrency_mode?: ConcurrencyMode;
+    max_executions_per_day?: number | null;
+    tags?: string[];
+    metadata?: Record<string, any>;
+    webhook_ids?: string[];
+    webhook_url?: string;
+};
+
+export type UpdateScheduledTaskRequest = Partial<CreateScheduledTaskRequest>;
+
+/** Base fields for ScheduledTask (API returns snake_case). All optional for flexibility. */
+export interface ScheduledTaskBase {
+    task_id?: string;
+    name?: string;
+    description?: string | null;
+    task_type?: ScheduledTaskType;
+    task_payload?: Record<string, any>;
+    cron_expression?: string;
+    timezone?: string;
+    concurrency_mode?: ConcurrencyMode;
+    max_executions_per_day?: number | null;
+    is_active?: boolean;
+    is_paused?: boolean;
+    pause_reason?: string | null;
+    next_execution_at?: string | null;
+    last_execution_at?: string | null;
+    total_executions?: number;
+    successful_executions?: number;
+    failed_executions?: number;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export type ScheduledTask = ScheduledTaskBase & Record<string, any>;
+
+export type ScheduledTaskCreateResponse = {
+    task_id: string;
+    next_execution_at: string | null;
+};
+
+/** Base fields for ScheduledTaskExecution (API returns snake_case). All optional for flexibility. */
+export interface ScheduledTaskExecutionBase {
+    execution_id?: string;
+    uuid?: string;
+    scheduled_task_uuid?: string;
+    execution_number?: number;
+    status?: string;
+    started_at?: string | null;
+    completed_at?: string | null;
+    job_uuid?: string | null;
+    error_message?: string | null;
+    triggered_by?: string;
+    scheduled_for?: string;
+    created_at?: string;
+}
+
+export type ScheduledTaskExecution = ScheduledTaskExecutionBase & Record<string, any>;
+
+export type ScheduledTaskExecutionsResponse = {
+    data: ScheduledTaskExecution[];
+    meta?: { limit: number; offset: number };
+};
+
+// Webhooks
+export type CreateWebhookRequest = {
+    name: string;
+    description?: string;
+    webhook_url: string;
+    event_types: string[];
+    scope?: 'all' | 'specific';
+    specific_task_ids?: string[];
+    custom_headers?: Record<string, string>;
+    timeout_seconds?: number;
+    max_retries?: number;
+    retry_backoff_multiplier?: number;
+    tags?: string[];
+    metadata?: Record<string, any>;
+};
+
+export type UpdateWebhookRequest = Partial<CreateWebhookRequest>;
+
+/** Base fields for Webhook (API returns snake_case). All optional for flexibility. */
+export interface WebhookBase {
+    webhook_id?: string;
+    name?: string;
+    description?: string | null;
+    webhook_url?: string;
+    event_types?: string[];
+    scope?: 'all' | 'specific';
+    specific_task_ids?: string[] | null;
+    is_active?: boolean;
+    total_deliveries?: number;
+    successful_deliveries?: number;
+    failed_deliveries?: number;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export type Webhook = WebhookBase & Record<string, any>;
+
+export type WebhookCreateResponse = {
+    webhook_id: string;
+    secret: string;
+    message: string;
+};
+
+/** Base fields for WebhookDelivery (API returns snake_case). All optional for flexibility. */
+export interface WebhookDeliveryBase {
+    delivery_id?: string;
+    uuid?: string;
+    webhook_subscription_uuid?: string;
+    event_type?: string;
+    status?: string;
+    attempt_number?: number;
+    response_status?: number | null;
+    created_at?: string;
+}
+
+export type WebhookDelivery = WebhookDeliveryBase & Record<string, any>;
+
+export type WebhookDeliveriesResponse = {
+    data: WebhookDelivery[];
+    meta?: { limit: number; offset: number; filters?: any };
+};
+
+export type WebhookEventsResponse = {
+    event_types: string[];
+    categories: Record<string, string[]>;
 };
