@@ -655,10 +655,18 @@ export class EngineConfigurator {
 
             if (errorMessage.includes("Received blocked status code: 403")) {
                 if (context?.request) {
-                    context.request.noRetry = true;
+                    context.request.noRetry = false;
                 }
-                log.info(`403 blocked-status session error detected, disabling retry for ${context?.request?.url || "unknown url"}`);
-                return false;
+                try {
+                    const session = (context as any).session;
+                    if (session && typeof session.retire === "function") {
+                        session.retire();
+                    }
+                } catch {
+                    // ignore session retire failures
+                }
+                log.info(`403 blocked-status detected, allowing retry with session rotation for ${context?.request?.url || "unknown url"}`);
+                return true;
             }
 
             // Timeout-like errors should fail fast and never retry.

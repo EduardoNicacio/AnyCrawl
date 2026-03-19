@@ -841,6 +841,25 @@ export abstract class BaseEngine {
                     retryError.name = "AnycrawlChallengeRetryError";
                     throw retryError;
                 }
+
+                if (effectiveStatus?.statusCode === 403) {
+                    try {
+                        const session = (context as any).session;
+                        if (session && typeof session.retire === "function") {
+                            session.retire();
+                        }
+                    } catch {
+                        // ignore session retire failures
+                    }
+
+                    log.warning(
+                        `[HTTP-403-RETRY] [${queueName}] [${jobId}] unhandled 403 (challenge.detected=${challengeState.detected ?? false}), retrying with rotated proxy: ${context.request.url}`
+                    );
+
+                    const retryError = new Error("ANYCRAWL_PROXY_ACTION_ROTATE_PROXY");
+                    retryError.name = "AnycrawlHttp403RetryError";
+                    throw retryError;
+                }
             }
 
             await settleAfterSolvedChallenge(context);
@@ -1244,23 +1263,25 @@ export abstract class BaseEngine {
                 }
 
                 // Record success to ProxyCacheManager for ALL proxy modes (auto/base/stealth)
-                // This caches the working proxy for future requests
-                try {
-                    const options = context.request.userData.options || {};
-                    const proxyMode = options.proxy;
-                    const proxyInfo = (context as any).proxyInfo;
-                    if (proxyMode && proxyInfo?.url) {
-                        const proxyCache = ProxyCacheManager.getInstance();
-                        const domain = proxyCache.extractDomain(context.request.url);
-                        if (domain) {
-                            log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyInfo.url}, mode=${proxyMode}`);
-                            proxyCache.recordDomainSuccess(domain, proxyInfo.url, proxyMode).catch(() => {
-                                // Ignore cache recording errors
-                            });
+                // Only record when the response was actually successful (skip HTTP errors like 403)
+                if (!isHttpError) {
+                    try {
+                        const options = context.request.userData.options || {};
+                        const proxyMode = options.proxy;
+                        const proxyInfo = (context as any).proxyInfo;
+                        if (proxyMode && proxyInfo?.url) {
+                            const proxyCache = ProxyCacheManager.getInstance();
+                            const domain = proxyCache.extractDomain(context.request.url);
+                            if (domain) {
+                                log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyInfo.url}, mode=${proxyMode}`);
+                                proxyCache.recordDomainSuccess(domain, proxyInfo.url, proxyMode).catch(() => {
+                                    // Ignore cache recording errors
+                                });
+                            }
                         }
+                    } catch (error) {
+                        // Ignore errors when recording success
                     }
-                } catch (error) {
-                    // Ignore errors when recording success
                 }
 
                 // Handle crawl logic if this is a crawl job (always run to discover links)
