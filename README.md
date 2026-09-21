@@ -136,7 +136,7 @@ curl -X POST https://api.anycrawl.dev/v1/scrape \
 
 More parameters: see [Request Parameters](https://docs.anycrawl.dev/en/general/scrape#request-parameters).
 
-Cache details (self-host / S3 / map index): see `docs/cache.md`.
+Cache details (self-host / S3 / map index): see [Cache](https://docs.anycrawl.dev/en/general/cache).
 
 #### Browser Runtime
 
@@ -256,7 +256,7 @@ curl -H 'Authorization: Bearer YOUR_ANYCRAWL_API_KEY' https://api.anycrawl.dev/v
 | ignore_invalid_urls | boolean             | Skip malformed URLs (returned in `invalid_urls`) instead of erroring   | true    |
 | _scrape options_    | -                   | All single-scrape options (`formats`, `proxy`, `json_options`, ...) shared across every URL | -       |
 
-Credits are charged per successfully scraped URL (failed URLs are not charged). Full reference: [Batch Scrape API](./docs/api/batch-scrape.md).
+Credits are charged per successfully scraped URL (failed URLs are not charged).
 
 ### Search Engine Results (SERP)
 
