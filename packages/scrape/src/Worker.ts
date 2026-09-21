@@ -10,6 +10,7 @@ import { refreshAIConfig, getDefaultLLModelId, getEnabledProviderModels } from "
 import { getDB, schemas, eq } from "@anycrawl/db";
 import { finalizeExecution } from "./managers/ExecutionLifecycle.js";
 import { MonitorManager } from "./monitor/MonitorManager.js";
+import { applyPlanProxyPolicy } from "./utils/planProxyPolicy.js";
 
 // Helper function to update execution status
 // Note: Metrics (credits_used, items_processed, etc.) are stored in jobs table
@@ -226,6 +227,9 @@ async function runJob(job: Job) {
     // Use queue job ID for status updates, but pass parentId for result recording
     const currentJobId = job.id as string;
     const parentId = job.data.parentId || currentJobId; // Use provided parentId for result recording
+    // Plans without a stealth proxy must not reach it through `auto` escalation.
+    // Every scrape and crawl page runs through here, whichever route created it.
+    options = await applyPlanProxyPolicy(options || {}, parentId);
     const uniqueKey = engineQueueManager.getRequestKey(engineType, job.data.url, { jobId: currentJobId });
     // Publish processing before handoff: a fast consumer must not have its
     // completed status overwritten by a delayed producer update.

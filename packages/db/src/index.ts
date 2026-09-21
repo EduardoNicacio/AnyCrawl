@@ -56,6 +56,7 @@ import {
 // Backward compatibility functions
 export const createJob = Job.create;
 export const getJob = Job.get;
+export const getJobSubscriptionTier = Job.getSubscriptionTier;
 export const cancelJob = Job.cancel;
 export const updateJobStatus = Job.updateStatus;
 export const failedJob = Job.markAsFailed;
