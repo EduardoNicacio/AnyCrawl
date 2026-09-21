@@ -22,6 +22,7 @@ import { getJob, insertJobResult, failedJob, completedJob, Billing, JOB_RESULT_S
 import { ProgressManager } from "../managers/Progress.js";
 import { CacheManager } from "../managers/Cache.js";
 import { log, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator, resolveWaitUntil, appConfig, config, getBrowserRuntimeForCache } from "@anycrawl/libs";
+import { failureMetadata } from "./failureMetadata.js";
 import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
@@ -275,6 +276,8 @@ export abstract class BaseEngine {
             }
         }
         const { jobId, queueName } = context.request.userData;
+        const challengeState = ensureChallengeState(context.request);
+        const challengeDetected = challengeState.detected === true && challengeState.cleared !== true;
         let error = null;
         if (status.statusCode === 0) {
             // Use the original error message directly
@@ -287,18 +290,25 @@ export abstract class BaseEngine {
                 CrawlerErrorType.HTTP_ERROR,
                 errorMessage,
                 context.request.url,
+                {
+                    metadata: {
+                        failure_class: failureMetadata({ statusCode: 0, message: errorMessage, data, challengeDetected }).failure_class,
+                    },
+                },
             );
         } else {
+            const message = `Page is not available: ${status.statusCode} ${status.statusMessage}`;
             error = this.createCrawlerError(
                 CrawlerErrorType.HTTP_ERROR,
-                `Page is not available: ${status.statusCode} ${status.statusMessage}`,
+                message,
                 context.request.url,
                 {
                     code: status.statusCode,
                     metadata: {
                         ...data,
                         statusCode: status.statusCode,
-                        statusMessage: status.statusMessage
+                        statusMessage: status.statusMessage,
+                        ...failureMetadata({ statusCode: status.statusCode, message, data, challengeDetected }),
                     }
                 }
             );

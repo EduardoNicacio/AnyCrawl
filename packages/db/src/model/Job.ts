@@ -99,6 +99,21 @@ export class Job {
     }
 
     /**
+     * Subscription tier of the API key that created a job, or null when the job
+     * or its key is unknown (jobs made without auth have no key).
+     */
+    public static async getSubscriptionTier(job_id: string): Promise<string | null> {
+        const db = await getDB();
+        const rows = await db
+            .select({ tier: schemas.apiKey.subscriptionTier })
+            .from(schemas.jobs)
+            .innerJoin(schemas.apiKey, eq(schemas.jobs.apiKey, schemas.apiKey.uuid))
+            .where(eq(schemas.jobs.jobId, job_id))
+            .limit(1);
+        return rows[0]?.tier ?? null;
+    }
+
+    /**
      * Cancel a job
      * @param job_id - The ID of the job to cancel
      * @returns The cancelled job

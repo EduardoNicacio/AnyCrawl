@@ -30,7 +30,9 @@ export const apiKey = p.pgTable("api_key", {
     allowedIps: p.jsonb("allowed_ips").$type<string[]>(),
     // Subscription tier for rate limiting (free, paid, etc.)
     subscriptionTier: p.text("subscription_tier").default("free").notNull(),
-});
+}, (table) => [
+    p.index("ix_api_key_user").on(table.user),
+]);
 
 export const requestLog = p.pgTable("request_log", {
     // Primary key with auto-incrementing ID
@@ -147,7 +149,9 @@ export const jobs = p.pgTable("jobs", {
     createdAt: p.timestamp("created_at").notNull(),
     // job updated at
     updatedAt: p.timestamp("updated_at").notNull(),
-});
+}, (table) => [
+    p.index("ix_jobs_api_key_created").on(table.apiKey, table.createdAt.desc()),
+]);
 
 export const jobResults = p.pgTable("job_results", {
     // Primary key with auto-incrementing ID
@@ -167,7 +171,9 @@ export const jobResults = p.pgTable("job_results", {
     createdAt: p.timestamp("created_at").notNull(),
     // updated at
     updatedAt: p.timestamp("updated_at").notNull(),
-});
+}, (table) => [
+    p.index("ix_job_results_job_uuid").on(table.jobUuid),
+]);
 
 // Template system tables
 export const templates = p.pgTable("templates", {
@@ -288,7 +294,9 @@ export const scheduledTasks = p.pgTable("scheduled_tasks", {
     metadata: p.jsonb("metadata"),
     createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
     updatedAt: p.timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
-});
+}, (table) => [
+    p.index("ix_scheduled_tasks_user").on(table.userId),
+]);
 
 export const taskExecutions = p.pgTable("task_executions", {
     uuid: p
@@ -311,7 +319,9 @@ export const taskExecutions = p.pgTable("task_executions", {
     scheduledFor: p.timestamp("scheduled_for", { withTimezone: true }).notNull(),
     metadata: p.jsonb("metadata"),
     createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
-});
+}, (table) => [
+    p.index("ix_task_executions_task_created").on(table.scheduledTaskUuid, table.createdAt.desc()),
+]);
 
 export const webhookSubscriptions = p.pgTable("webhook_subscriptions", {
     uuid: p

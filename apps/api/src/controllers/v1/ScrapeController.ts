@@ -11,6 +11,7 @@ import { renderUrlTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 import { randomUUID } from "crypto";
 import { rejectIfPlanForbids } from "../../utils/planGuard.js";
+import { failureFields } from "../../utils/failureHint.js";
 
 export class ScrapeController {
     private resolveWaitTimeoutMs(jobPayload: any, hasExplicitTimeout: boolean): number {
@@ -388,6 +389,7 @@ export class ScrapeController {
                     success: false,
                     error: "Scrape task failed",
                     message: message,
+                    ...failureFields(req, jobData),
                     data: {
                         ...jobData,
                     }
