@@ -4,6 +4,7 @@ export * from "./constants.js";
 export * from "./s3.js";
 export * from "./credits.js";
 export * from "./plan-limits.js";
+export * from "./failure-class.js";
 export * from "./proxy.js";
 export * from "./scheduled-tasks.js";
 export * from "./monitor-configuration.js";
