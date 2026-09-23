@@ -289,13 +289,19 @@ describe("TemplateRunController.create", () => {
         getTemplateRun.mockResolvedValue({ ...queuedRun, status: "completed", datasetId: "ds-1", datasetRunUuid: "dr-1" });
 
         const res = mockRes();
-        await new TemplateRunController().create(mockReq("content-extractor", { url: "https://x.com" }), res);
+        await new TemplateRunController().create(mockReq("content-extractor", {
+            url: "https://x.com",
+            run_options: {},
+            delivery: { webhook_events: ["dataset.run.completed"] },
+        }), res);
 
         expect(executeSingleRun).toHaveBeenCalledTimes(1);
         expect(startCrawlRun).not.toHaveBeenCalled();
         // adapter receives the raw (un-merged) delegated body with template_id set
         const passed = executeSingleRun.mock.calls[0]![0] as any;
         expect(passed.delegatedBody.template_id).toBe("content-extractor");
+        expect(passed.delegatedBody.run_options).toBeUndefined();
+        expect(passed.delegatedBody.delivery).toBeUndefined();
         expect(passed.delegatedBody.output.dataset.create.name).toBe("Content Extractor · run-uuid-1");
         expect(passed.run).toBe(queuedRun);
         expect(res.statusCode).toBe(201);

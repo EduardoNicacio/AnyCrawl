@@ -133,6 +133,10 @@ export class TemplateRunController {
                 ...(req.body as Record<string, unknown>),
                 template_id: template.templateId,
             };
+            // Run lifecycle fields belong to this controller. The legacy
+            // scrape/search/crawl validators only accept producer inputs.
+            delete delegatedBody.run_options;
+            delete delegatedBody.delivery;
 
             // Pre-flight validation: merge variables + domain/keyword restrictions.
             // Throws on invalid variables / disallowed URL — mapped to 400 below.
