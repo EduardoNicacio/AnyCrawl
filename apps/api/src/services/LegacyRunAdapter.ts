@@ -7,10 +7,12 @@ import {
     appendTemplateRunEvent,
     updateTemplateRunStatus,
     finalizeTemplateRun,
+    getJob,
 } from "@anycrawl/db";
 import { ScrapeController } from "../controllers/v1/ScrapeController.js";
 import { SearchController } from "../controllers/v1/SearchController.js";
 import { CrawlController } from "../controllers/v1/CrawlController.js";
+import { expireSingleRun, SINGLE_RUN_TIMEOUT_MS, stopSingleJob } from "./SingleRunTimeout.js";
 
 /**
  * Legacy Run Adapter (design doc §7.1).
@@ -112,12 +114,42 @@ export class LegacyRunAdapter {
         // run to `running` before invoking the legacy controller.
         req.body = delegatedBody;
         req.resolvedTemplateType = type;
+        req.templateRunDeadlineAt = Date.now() + SINGLE_RUN_TIMEOUT_MS;
         await appendTemplateRunEvent(run.uuid, "run_started", { mode: "single", template_type: type });
         await updateTemplateRunStatus(run.uuid, { status: "running", startedAt });
 
+        req.onTemplateRunJobCreated = async (jobId) => {
+            const job = await getJob(jobId);
+            if (!job) throw new Error(`Backing job ${jobId} was not persisted`);
+            await updateTemplateRunStatus(run.uuid, {
+                legacyJobUuid: job.uuid,
+                statistics: { legacy_job_id: jobId },
+            });
+            if (Date.now() >= req.templateRunDeadlineAt!) await stopSingleJob(jobId);
+        };
+
         const cap = new CapturingResponse();
         const controller = type === "search" ? this.searchController : this.scrapeController;
-        await controller.handle(req, cap as unknown as Response);
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const finished = await Promise.race([
+            controller.handle(req, cap as unknown as Response).then(() => true),
+            new Promise<false>((resolve) => {
+                timeoutId = setTimeout(() => resolve(false), SINGLE_RUN_TIMEOUT_MS);
+            }),
+        ]).finally(() => clearTimeout(timeoutId));
+        if (!finished) {
+            req.creditsUsed = 0;
+            req.billingChargeDetails = undefined;
+            await expireSingleRun(run, req.jobId);
+            return {
+                ok: false,
+                httpStatus: 504,
+                result: null,
+                jobId: req.jobId ?? null,
+                datasetOutcome: null,
+                errorBody: { success: false, error: "RUN_TIMEOUT", message: "Single run exceeded 60 seconds" },
+            };
+        }
 
         const httpStatus = cap.statusCode || 200;
         const body = cap.body ?? {};
@@ -130,7 +162,10 @@ export class LegacyRunAdapter {
         if (!ok) {
             // Producer failed (schema/domain/scrape task) — record the run as failed
             // without inferring a dataset. Credits already zeroed by the controller.
-            await updateTemplateRunStatus(run.uuid, { legacyJobUuid: jobId });
+            if (jobId) {
+                const job = await getJob(jobId);
+                if (job) await updateTemplateRunStatus(run.uuid, { legacyJobUuid: job.uuid });
+            }
             await appendTemplateRunEvent(run.uuid, "run_failed", {
                 http_status: httpStatus,
                 error: body?.error ?? null,
@@ -155,7 +190,8 @@ export class LegacyRunAdapter {
         if (datasetRunUuid) {
             await this.linkDatasetArtifacts(run.uuid, datasetRunUuid);
         }
-        await updateTemplateRunStatus(run.uuid, { datasetId, datasetRunUuid, legacyJobUuid: jobId });
+        const legacyJob = jobId ? await getJob(jobId) : null;
+        await updateTemplateRunStatus(run.uuid, { datasetId, datasetRunUuid, legacyJobUuid: legacyJob?.uuid ?? null });
         await appendTemplateRunEvent(run.uuid, `run_${terminal}`, {
             legacy_job_id: jobId,
             dataset: datasetOutcome,
@@ -205,10 +241,12 @@ export class LegacyRunAdapter {
             return { ok: false, httpStatus, jobId, datasetId, body };
         }
 
+        const legacyJob = jobId ? await getJob(jobId) : null;
         await updateTemplateRunStatus(run.uuid, {
             status: "running",
-            legacyJobUuid: jobId,
+            legacyJobUuid: legacyJob?.uuid ?? null,
             datasetId,
+            statistics: { legacy_job_id: jobId },
             startedAt: new Date(),
         });
         await appendTemplateRunEvent(run.uuid, "run_running", { legacy_job_id: jobId });

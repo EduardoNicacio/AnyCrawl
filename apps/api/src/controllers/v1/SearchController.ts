@@ -255,6 +255,7 @@ export class SearchController {
                 status: STATUS.PENDING,
             });
             req.jobId = searchJobId;
+            await req.onTemplateRunJobCreated?.(searchJobId);
 
             // Trigger search.created webhook
             await triggerWebhookEvent(

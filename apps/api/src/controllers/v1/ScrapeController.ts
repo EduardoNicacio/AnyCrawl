@@ -322,7 +322,10 @@ export class ScrapeController {
             }
 
             const waitTimeout = this.resolveWaitTimeoutMs(jobPayload, hasExplicitTimeout);
-            const deadlineAt = Date.now() + waitTimeout;
+            const deadlineAt = Math.min(
+                Date.now() + waitTimeout,
+                req.templateRunDeadlineAt ?? Infinity
+            );
             (jobPayload as any)._anycrawlJobDeadlineAt = deadlineAt;
             jobId = await QueueManager.getInstance().addJob(`scrape-${engineName}`, jobPayload);
             await createJob({
@@ -335,6 +338,7 @@ export class ScrapeController {
             });
             // Propagate jobId for downstream middlewares (e.g., credits logging)
             req.jobId = jobId;
+            await req.onTemplateRunJobCreated?.(jobId);
 
             // Trigger scrape.created webhook
             await triggerWebhookEvent(
