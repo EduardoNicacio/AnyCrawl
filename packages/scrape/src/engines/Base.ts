@@ -263,6 +263,8 @@ export abstract class BaseEngine {
         data?: any,
         tryExtractData = false
     ): Promise<void> {
+        const templateError = data instanceof Error &&
+            (data as any).code === "TEMPLATE_EXECUTION_ERROR" ? data : null;
         if (tryExtractData) {
             let extractedData = {};
             // try to extract data
@@ -279,7 +281,14 @@ export abstract class BaseEngine {
         const challengeState = ensureChallengeState(context.request);
         const challengeDetected = challengeState.detected === true && challengeState.cleared !== true;
         let error = null;
-        if (status.statusCode === 0) {
+        if (templateError && status.statusCode >= 200 && status.statusCode < 400) {
+            error = this.createCrawlerError(
+                CrawlerErrorType.VALIDATION_ERROR,
+                templateError.message,
+                context.request.url,
+                { metadata: { statusCode: status.statusCode } }
+            );
+        } else if (status.statusCode === 0) {
             // Use the original error message directly
             let errorMessage = 'Page is not available';
             if (data instanceof Error && data.message) {
