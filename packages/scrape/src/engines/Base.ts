@@ -1,4 +1,4 @@
-import { mayStartBrowserTask } from "../core/BrowserTaskGuard.js";
+import { BrowserTaskExpiredError, mayStartBrowserTask } from "../core/BrowserTaskGuard.js";
 import { browserFailureDetails } from "../core/BrowserFailure.js";
 import { reserveCloudflareReload } from '../challenges/cloudflare/CloudflareReload.js';
 import { Deadline } from '../utils/Deadline.js';
@@ -263,9 +263,10 @@ export abstract class BaseEngine {
         data?: any,
         tryExtractData = false
     ): Promise<void> {
+        const expiredError = data instanceof BrowserTaskExpiredError ? data : null;
         const templateError = data instanceof Error &&
             (data as any).code === "TEMPLATE_EXECUTION_ERROR" ? data : null;
-        if (tryExtractData) {
+        if (tryExtractData && !expiredError) {
             let extractedData = {};
             // try to extract data
             try {
@@ -281,7 +282,14 @@ export abstract class BaseEngine {
         const challengeState = ensureChallengeState(context.request);
         const challengeDetected = challengeState.detected === true && challengeState.cleared !== true;
         let error = null;
-        if (templateError && status.statusCode >= 200 && status.statusCode < 400) {
+        if (expiredError) {
+            error = this.createCrawlerError(
+                CrawlerErrorType.INTERNAL_ERROR,
+                expiredError.message,
+                context.request.url,
+                { metadata: { statusCode: status.statusCode } }
+            );
+        } else if (templateError && status.statusCode >= 200 && status.statusCode < 400) {
             error = this.createCrawlerError(
                 CrawlerErrorType.VALIDATION_ERROR,
                 templateError.message,
@@ -1507,7 +1515,10 @@ export abstract class BaseEngine {
             // Update job status if jobId exists
             if (jobId) {
                 if (isHttpError) {
-                    const status = this.extractResponseStatus(context.response as CrawlerResponse);
+                    // Keep the status that made checkHttpError fail. Template
+                    // execution or a recovery navigation may replace the live
+                    // response with HTTP 200 before we persist the failure.
+                    const status = effectiveStatus ?? this.extractResponseStatus(context.response as CrawlerResponse);
                     await this.handleFailedRequest(context, status, data);
                 } else if (context.request.userData.type === JOB_TYPE_SCRAPE) {
                     // Update counters + completed in one call
