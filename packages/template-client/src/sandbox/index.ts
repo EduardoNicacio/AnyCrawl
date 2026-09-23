@@ -31,6 +31,28 @@ interface ExecutionStats {
 export class QuickJSSandbox {
     private config: SandboxConfig;
 
+    private executionTimeoutMs(context: SandboxContext): number {
+        const deadlineAt = Number(context.executionContext?.userData?._anycrawlJobDeadlineAt);
+        if (!Number.isFinite(deadlineAt) || deadlineAt <= 0) return this.config.timeout;
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) throw new SandboxError('Browser task deadline exceeded');
+        return Math.max(1, Math.min(this.config.timeout, remaining));
+    }
+
+    private async withinTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([
+                operation,
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new SandboxError(`Execution timeout (${timeoutMs}ms)`)), timeoutMs);
+                }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     // Provide preNav API that proxies to a host implementation injected via executionContext.preNavHost
     private createPreNavApi(sandboxCtx: SandboxContext) {
         const host = (sandboxCtx.executionContext as any)?.preNavHost;
@@ -313,7 +335,9 @@ export class QuickJSSandbox {
         };
 
         // Precompute HTML using original page (not proxy)
-        const html = await this.resolveFullHtml(context, context.page);
+        const html = await this.withinTimeout(
+            this.resolveFullHtml(context, context.page), this.executionTimeoutMs(context)
+        );
 
         // Create secure page proxy
         const securePage = context.page ? this.createSecurePageProxy(context.page, stats) : undefined;
@@ -383,15 +407,8 @@ export class QuickJSSandbox {
             const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
             const fn = new AsyncFunction(...paramNames, code);
 
-            // Set a timeout wrapper
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => {
-                    reject(new Error(`Execution timeout (${this.config.timeout}ms)`));
-                }, this.config.timeout);
-            });
-
             const executionPromise = fn(...paramValues);
-            const result = await Promise.race([executionPromise, timeoutPromise]);
+            const result = await this.withinTimeout(executionPromise, this.executionTimeoutMs(context));
 
             // Log execution stats
             const executionTime = Date.now() - stats.startTime;
@@ -428,7 +445,9 @@ export class QuickJSSandbox {
         const rawPage = context.page;
 
         // Resolve HTML using original page
-        const html = await this.resolveFullHtml(context, context.page);
+        const html = await this.withinTimeout(
+            this.resolveFullHtml(context, context.page), this.executionTimeoutMs(context)
+        );
 
         // Create VM sandbox with page object (passed by reference)
         const sandbox = {
@@ -478,12 +497,12 @@ export class QuickJSSandbox {
         try {
             // Execute in isolated VM context
             const resultPromise = runInNewContext(wrappedCode, sandbox, {
-                timeout: this.config.timeout,
+                timeout: this.executionTimeoutMs(context),
                 displayErrors: true
             });
 
-            // Await result if it's a Promise
-            const result = resultPromise instanceof Promise ? await resultPromise : resultPromise;
+            // Assimilate promises from the VM realm and bound async work too.
+            const result = await this.withinTimeout(Promise.resolve(resultPromise), this.executionTimeoutMs(context));
 
             // Log execution stats
             const executionTime = Date.now() - startTime;
