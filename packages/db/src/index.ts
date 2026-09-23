@@ -152,6 +152,7 @@ export const getDatasetByOwnerAndName = Dataset.getByOwnerAndName;
 export const getDatasetItems = Dataset.getItems;
 export const listDatasetRuns = Dataset.listRuns;
 export const getDatasetRun = Dataset.getRun;
+export const getDatasetRunByProducer = Dataset.getRunByProducer;
 export const listDatasetRunItems = Dataset.listRunItems;
 export const listDatasetChanges = Dataset.listChanges;
 export const listRunWarnings = Dataset.listRunWarnings;

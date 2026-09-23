@@ -11,6 +11,7 @@ import {
     updateTemplateRunRequestStatus,
     countTemplateRunRequestsByStatus,
     writeResultToDataset,
+    finalizeCrawlDatasetRun,
     createJob,
     getJobResults,
     getDB,
@@ -382,7 +383,7 @@ export class OrchestratedRunner {
                 if (items.length > 0) {
                     itemsFound += items.length;
                     try {
-                        await writeResultToDataset({
+                        const datasetWrite = await writeResultToDataset({
                             producerType: "template-run",
                             producerId: runId,
                             jobId: runId,
@@ -394,6 +395,10 @@ export class OrchestratedRunner {
                             dataset: this.datasetTarget(payload),
                             pageIndex: globalPageCounter++,
                             finalizeRun: false,
+                        });
+                        await updateTemplateRunStatus(runId, {
+                            datasetId: datasetWrite.datasetId,
+                            datasetRunUuid: datasetWrite.datasetRunId,
                         });
                         itemsReturned += items.length;
                     } catch (e) {
@@ -500,6 +505,27 @@ export class OrchestratedRunner {
                 // Another actor still has work in flight; leave finalization to it.
                 log.info(`[template-run] [${runId}] ${pending} request(s) still pending; deferring finalize`);
                 return;
+            }
+        }
+
+        // The streaming writer leaves the Dataset Run in "running" until the
+        // template has drained its page queue. Finalize it before the Template
+        // Run so the Output view has a stable item order after completion.
+        const currentRun = await getTemplateRun(runId);
+        if (currentRun?.datasetId) {
+            try {
+                await finalizeCrawlDatasetRun({
+                    datasetId: currentRun.datasetId,
+                    producerId: runId,
+                    producerType: "template-run",
+                });
+            } catch (error) {
+                anyWriteFailed = true;
+                await recordWarning({
+                    scope: "run",
+                    code: "dataset_finalize_failed",
+                    message: error instanceof Error ? error.message : String(error),
+                });
             }
         }
 

@@ -13,6 +13,7 @@ const listTemplateRunWarnings = jest.fn<(db: any, id: string, opts: any) => Prom
 const requestTemplateRunCancel = jest.fn<(id: string) => Promise<any>>();
 const finalizeTemplateRun = jest.fn<(id: string, s: string, e?: any) => Promise<any>>();
 const getJob = jest.fn<(id: string) => Promise<any>>();
+const getDatasetRunByProducer = jest.fn<(db: any, datasetId: string, producerType: string, producerId: string) => Promise<any>>();
 const getDB = jest.fn(async () => ({}));
 const computeDocumentHash = jest.fn((v: unknown) => `hash:${JSON.stringify(v)}`);
 
@@ -52,6 +53,7 @@ jest.unstable_mockModule("@anycrawl/db", () => ({
     requestTemplateRunCancel,
     finalizeTemplateRun,
     getJob,
+    getDatasetRunByProducer,
     getDB,
     computeDocumentHash,
     appendTemplateRunEvent,
@@ -148,6 +150,7 @@ beforeEach(() => {
     mergeRequestWithTemplate.mockImplementation(async (body: any) => body);
     createTemplateRun.mockResolvedValue(queuedRun);
     getTemplateRunByIdempotency.mockResolvedValue(null);
+    getDatasetRunByProducer.mockResolvedValue(null);
 });
 
 describe("TemplateRunController.create", () => {
@@ -293,6 +296,7 @@ describe("TemplateRunController.create", () => {
         // adapter receives the raw (un-merged) delegated body with template_id set
         const passed = executeSingleRun.mock.calls[0]![0] as any;
         expect(passed.delegatedBody.template_id).toBe("content-extractor");
+        expect(passed.delegatedBody.output.dataset.create.name).toBe("Content Extractor · run-uuid-1");
         expect(passed.run).toBe(queuedRun);
         expect(res.statusCode).toBe(201);
         expect(res.body.success).toBe(true);
@@ -376,6 +380,22 @@ describe("TemplateRunController.create", () => {
 });
 
 describe("TemplateRunController.get / cancel", () => {
+    it("returns the saved input for the owner-scoped run detail", async () => {
+        resolveTemplateByRef.mockResolvedValue(scrapeTemplate);
+        getOwnedTemplateRun.mockResolvedValue({
+            ...queuedRun,
+            status: "completed",
+            inputSnapshot: { url: "https://x.com", variables: { waitFor: 500 } },
+        });
+
+        const res = mockRes();
+        const req = mockReq("content-extractor");
+        req.params.run_id = "run-uuid-1";
+        await new TemplateRunController().get(req, res);
+
+        expect(res.body.data.input).toEqual({ url: "https://x.com", variables: { waitFor: 500 } });
+    });
+
     it("returns 404 when the run does not belong to the path template", async () => {
         resolveTemplateByRef.mockResolvedValue(scrapeTemplate);
         getOwnedTemplateRun.mockResolvedValue({ ...queuedRun, templateUuid: "other-tpl" });
@@ -403,6 +423,27 @@ describe("TemplateRunController.get / cancel", () => {
         expect(getJob).toHaveBeenCalledWith("job-9");
         expect(finalizeTemplateRun).toHaveBeenCalledWith("run-uuid-1", "completed", expect.anything());
         expect(res.body.data.status).toBe("completed");
+    });
+
+    it("links a legacy crawl's dataset run to its template run", async () => {
+        resolveTemplateByRef.mockResolvedValue(crawlTemplate);
+        getOwnedTemplateRun.mockResolvedValue({
+            ...queuedRun, status: "running", legacyJobUuid: "job-9", datasetId: "ds-1",
+        });
+        getDatasetRunByProducer.mockResolvedValue({ uuid: "dataset-run-1" });
+        getJob.mockResolvedValue({ status: "completed", total: 1, completed: 1, failed: 0 });
+        finalizeTemplateRun.mockResolvedValue({
+            ...queuedRun, status: "completed", datasetId: "ds-1", datasetRunUuid: "dataset-run-1",
+        });
+
+        const res = mockRes();
+        const req = mockReq("content-extractor");
+        req.params.run_id = "run-uuid-1";
+        await new TemplateRunController().get(req, res);
+
+        expect(getDatasetRunByProducer).toHaveBeenCalledWith(expect.anything(), "ds-1", "crawl", "job-9");
+        expect(updateTemplateRunStatus).toHaveBeenCalledWith("run-uuid-1", { datasetRunUuid: "dataset-run-1" });
+        expect(res.body.data.dataset_run_id).toBe("dataset-run-1");
     });
 
     it("cancel is idempotent for a terminal run (returns current state)", async () => {
