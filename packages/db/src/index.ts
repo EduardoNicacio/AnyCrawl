@@ -57,6 +57,7 @@ import {
 export const createJob = Job.create;
 export const getJob = Job.get;
 export const getJobSubscriptionTier = Job.getSubscriptionTier;
+export const getJobByUuid = Job.getByUuid;
 export const cancelJob = Job.cancel;
 export const updateJobStatus = Job.updateStatus;
 export const failedJob = Job.markAsFailed;

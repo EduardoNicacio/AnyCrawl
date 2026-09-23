@@ -14,7 +14,7 @@ import {
     listTemplateRunWarnings,
     requestTemplateRunCancel,
     finalizeTemplateRun,
-    getJob,
+    getJobByUuid,
     getDatasetRunByProducer,
     updateTemplateRunStatus,
     computeDocumentHash,
@@ -24,6 +24,7 @@ import {
 import { TemplateHandler } from "../../utils/templateHandler.js";
 import { LegacyRunAdapter } from "../../services/LegacyRunAdapter.js";
 import { OrchestratedRunAdapter } from "../../services/OrchestratedRunAdapter.js";
+import { expireSingleRun, SINGLE_RUN_TIMEOUT_MS } from "../../services/SingleRunTimeout.js";
 import { serializeRecords } from "../../utils/serializer.js";
 import { encodeCursor, decodeCursor, InvalidCursorError, type Cursor } from "../../utils/cursor.js";
 
@@ -268,12 +269,31 @@ export class TemplateRunController {
                 return;
             }
 
-            const outcome = await this.adapter.executeSingleRun({
-                run,
-                template,
-                delegatedBody,
-                req,
-            });
+            let outcome;
+            try {
+                outcome = await this.adapter.executeSingleRun({
+                    run,
+                    template,
+                    delegatedBody,
+                    req,
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
+                await finalizeTemplateRun(run.uuid, "failed", {
+                    stopReason: "internal_error",
+                    errorCode: "RUN_EXECUTION_ERROR",
+                    errorMessage: message,
+                });
+                const failedRun = (await getTemplateRun(run.uuid)) ?? run;
+                res.status(500).json({
+                    success: false,
+                    data: this.formatRun(failedRun, ref, template.templateId),
+                    error: "RUN_EXECUTION_ERROR",
+                });
+                return;
+            }
             const finalRun = (await getTemplateRun(run.uuid)) ?? run;
             const httpStatus = outcome.ok ? 201 : outcome.httpStatus || 500;
             res.status(httpStatus).json({
@@ -317,7 +337,9 @@ export class TemplateRunController {
             res.json({
                 success: true,
                 data: {
-                    runs: items.map((r: any) => this.formatRun(r, req.params.templateRef!, template.templateId)),
+                    runs: await Promise.all(items.map(async (r: any) =>
+                        this.formatRun(await this.refreshSingleRun(r, template.templateType), req.params.templateRef!, template.templateId)
+                    )),
                     next_cursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
                 },
             });
@@ -337,6 +359,7 @@ export class TemplateRunController {
             let { run } = loaded;
 
             // A still-running single crawl derives its live status from the legacy job.
+            run = await this.refreshSingleRun(run, template.templateType);
             run = await this.refreshCrawlRun(run);
 
             res.json({
@@ -374,7 +397,8 @@ export class TemplateRunController {
             // Best-effort: stop the backing crawl job so the worker short-circuits.
             if (run.legacyJobUuid) {
                 try {
-                    await this.adapter.cancelCrawlJob(run.legacyJobUuid);
+                    const job = await getJobByUuid(run.legacyJobUuid);
+                    if (job) await this.adapter.cancelCrawlJob(job.jobId);
                 } catch (e) {
                     log.warning(
                         `[TEMPLATE-RUN] cancelCrawlJob failed for ${run.legacyJobUuid}: ${e instanceof Error ? e.message : String(e)}`
@@ -546,6 +570,19 @@ export class TemplateRunController {
     }
 
     /**
+     * Recover single scrape/search Runs left behind by a disconnected request or
+     * API restart. The database transition is atomic with the normal finalize.
+     */
+    private async refreshSingleRun(run: any, templateType: string): Promise<any> {
+        if (run.mode !== "single" || templateType === "crawl" ||
+            (TEMPLATE_RUN_TERMINAL_STATUSES as readonly string[]).includes(run.status)) return run;
+        const startedAt = run.startedAt ?? run.createdAt;
+        if (!startedAt || Date.now() - new Date(startedAt).getTime() < SINGLE_RUN_TIMEOUT_MS) return run;
+        const expired = await expireSingleRun(run);
+        return expired ?? (await getTemplateRun(run.uuid)) ?? run;
+    }
+
+    /**
      * Refresh a single crawl run's status from its backing legacy job. Only acts
      * on a non-terminal run bound to a legacy job; a finished job finalizes the
      * run to the mapped terminal state.
@@ -554,13 +591,16 @@ export class TemplateRunController {
         let datasetRunUuid = run.datasetRunUuid ?? null;
         if (!datasetRunUuid && run.datasetId && run.legacyJobUuid) {
             const db = await getDB();
-            const datasetRun = await getDatasetRunByProducer(db, run.datasetId, "crawl", run.legacyJobUuid);
+            const legacyJob = await getJobByUuid(run.legacyJobUuid);
+            const datasetRun = legacyJob
+                ? await getDatasetRunByProducer(db, run.datasetId, "crawl", legacyJob.jobId)
+                : null;
             datasetRunUuid = datasetRun?.uuid ?? null;
         }
         const nonTerminal = !(TEMPLATE_RUN_TERMINAL_STATUSES as readonly string[]).includes(run.status);
         if (!nonTerminal || !run.legacyJobUuid) return { ...run, datasetRunUuid };
 
-        const job = await getJob(run.legacyJobUuid);
+        const job = await getJobByUuid(run.legacyJobUuid);
         if (!job) return run;
 
         let terminal: "completed" | "failed" | "cancelled" | null = null;
@@ -575,7 +615,7 @@ export class TemplateRunController {
 
         const finalized = await finalizeTemplateRun(run.uuid, terminal, {
             statistics: {
-                legacy_job_id: run.legacyJobUuid,
+                legacy_job_id: job.jobId,
                 total: job.total ?? 0,
                 completed: job.completed ?? 0,
                 failed: job.failed ?? 0,
@@ -600,7 +640,7 @@ export class TemplateRunController {
             status: run.status ?? null,
             dataset_id: run.datasetId ?? null,
             dataset_run_id: run.datasetRunUuid ?? null,
-            legacy_job_id: run.legacyJobUuid ?? null,
+            legacy_job_id: run.statistics?.legacy_job_id ?? null,
             stop_reason: run.stopReason ?? null,
             error_code: run.errorCode ?? null,
             error_message: run.errorMessage ?? null,

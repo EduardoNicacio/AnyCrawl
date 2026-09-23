@@ -98,6 +98,13 @@ export class Job {
         return job[0];
     }
 
+    /** Resolve the internal jobs.uuid stored by template_runs.legacy_job_uuid. */
+    public static async getByUuid(uuid: string) {
+        const db = await getDB();
+        const job = await db.select().from(schemas.jobs).where(eq(schemas.jobs.uuid, uuid)).limit(1);
+        return job[0];
+    }
+
     /**
      * Subscription tier of the API key that created a job, or null when the job
      * or its key is unknown (jobs made without auth have no key).
