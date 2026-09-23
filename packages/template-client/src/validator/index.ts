@@ -36,7 +36,7 @@ export class TemplateCodeValidator {
         // Run validations (throws on failure)
         this.validateSyntax(code, templateId);
         this.validateSecurity(code);
-        this.validateComplexity(code);
+        this.validateComplexity(code, template);
 
         // All validations passed - cache this version (replaces old version)
         this.validatedTemplates.set(templateId, updatedAt);
@@ -80,9 +80,13 @@ export class TemplateCodeValidator {
     /**
      * Validate code complexity
      */
-    private validateComplexity(code: string): void {
+    private validateComplexity(code: string, template: TemplateConfig): void {
         // Check total code length (guards against oversized handlers / DoS via huge payloads)
-        const maxCodeLength = 10000;
+        // Built-in, reviewed templates contain larger extraction handlers. Keep
+        // the original 10k cap for user templates and every other security check.
+        const maxCodeLength = template.trusted === true && template.reviewStatus === "approved"
+            ? 50000
+            : 10000;
         if (code.length > maxCodeLength) {
             throw new TemplateValidationError(`Code too long (max ${maxCodeLength} characters)`);
         }

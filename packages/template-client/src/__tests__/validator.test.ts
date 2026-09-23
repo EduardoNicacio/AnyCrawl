@@ -1,6 +1,8 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { TemplateCodeValidator } from "../validator/index.js";
 import type { TemplateConfig } from "@anycrawl/libs";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 describe("TemplateCodeValidator", () => {
     let validator: TemplateCodeValidator;
@@ -112,6 +114,27 @@ describe("TemplateCodeValidator", () => {
             const longCode = "a".repeat(10001);
 
             await expect(validator.validateCode(longCode, mockTemplate)).rejects.toThrow("Code too long");
+        });
+
+        it("allows reviewed trusted handlers up to 50k characters", async () => {
+            const trusted = { ...mockTemplate, trusted: true, reviewStatus: "approved" as const };
+            const handler = "return 1;\n" + " ".repeat(36_000);
+            await expect(validator.validateCode(handler, trusted)).resolves.toBe(true);
+            await expect(validator.validateCode("return 1;\n" + " ".repeat(50_000), {
+                ...trusted, updatedAt: new Date(Date.now() + 1000),
+            })).rejects.toThrow("Code too long (max 50000 characters)");
+        });
+
+        it("validates the published Instagram and YouTube handlers", async () => {
+            for (const templateId of ["instagram-scraper", "youtube-video-content-extractor"]) {
+                const handler = readFileSync(
+                    resolve(process.cwd(), "../../templates", templateId, "requestHandler.js"),
+                    "utf8"
+                );
+                await expect(validator.validateCode(handler, {
+                    ...mockTemplate, templateId, trusted: true, reviewStatus: "approved",
+                })).resolves.toBe(true);
+            }
         });
 
         it("should reject code with too much nesting", async () => {
