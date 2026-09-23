@@ -591,6 +591,25 @@ export class Dataset {
         return rows[0] || null;
     }
 
+    /** Resolve the Dataset Run written by a legacy producer job. */
+    static async getRunByProducer(
+        db: DBExecutor,
+        datasetId: string,
+        producerType: string,
+        producerId: string
+    ): Promise<any | null> {
+        const rows = await db
+            .select()
+            .from(schemas.datasetRuns)
+            .where(and(
+                eq(schemas.datasetRuns.datasetId, datasetId),
+                eq(schemas.datasetRuns.producerType, producerType),
+                eq(schemas.datasetRuns.producerId, producerId)
+            ))
+            .limit(1);
+        return rows[0] || null;
+    }
+
     /** Run members in deterministic order, cursor on (sequence, uuid) ascending. */
     static async listRunItems(
         db: DBExecutor,

@@ -15,6 +15,8 @@ import {
     requestTemplateRunCancel,
     finalizeTemplateRun,
     getJob,
+    getDatasetRunByProducer,
+    updateTemplateRunStatus,
     computeDocumentHash,
     STATUS,
     TEMPLATE_RUN_TERMINAL_STATUSES,
@@ -206,6 +208,16 @@ export class TemplateRunController {
                 return;
             }
 
+            // Assign a durable destination after the idempotency check. Naming it
+            // from the persisted Run ID gives each automatic dataset a stable,
+            // unique name without changing the hash of a retried request.
+            if (body.output?.dataset === undefined) {
+                delegatedBody.output = {
+                    ...body.output,
+                    dataset: { create: { name: `${template.name} · ${run.uuid}` } },
+                };
+            }
+
             // Orchestrated dispatch: resolve the dataset destination + engine and
             // enqueue onto the template-run worker → running (202). Any failure after
             // the row exists finalizes the run failed (never left queued).
@@ -216,7 +228,7 @@ export class TemplateRunController {
                     revision,
                     variables: mergedVariables,
                     runOptions: (body.run_options as Record<string, unknown>) ?? null,
-                    rawOutput: body.output,
+                    rawOutput: delegatedBody.output,
                     req,
                 });
                 const finalRun = (await getTemplateRun(run.uuid)) ?? run;
@@ -325,7 +337,10 @@ export class TemplateRunController {
 
             res.json({
                 success: true,
-                data: this.formatRun(run, req.params.templateRef!, template.templateId),
+                data: {
+                    ...this.formatRun(run, req.params.templateRef!, template.templateId),
+                    input: run.inputSnapshot ?? null,
+                },
             });
         } catch (error) {
             this.handleError(error, res);
@@ -532,8 +547,14 @@ export class TemplateRunController {
      * run to the mapped terminal state.
      */
     private async refreshCrawlRun(run: any): Promise<any> {
+        let datasetRunUuid = run.datasetRunUuid ?? null;
+        if (!datasetRunUuid && run.datasetId && run.legacyJobUuid) {
+            const db = await getDB();
+            const datasetRun = await getDatasetRunByProducer(db, run.datasetId, "crawl", run.legacyJobUuid);
+            datasetRunUuid = datasetRun?.uuid ?? null;
+        }
         const nonTerminal = !(TEMPLATE_RUN_TERMINAL_STATUSES as readonly string[]).includes(run.status);
-        if (!nonTerminal || !run.legacyJobUuid) return run;
+        if (!nonTerminal || !run.legacyJobUuid) return { ...run, datasetRunUuid };
 
         const job = await getJob(run.legacyJobUuid);
         if (!job) return run;
@@ -542,7 +563,11 @@ export class TemplateRunController {
         if (job.status === STATUS.COMPLETED) terminal = "completed";
         else if (job.status === STATUS.FAILED) terminal = "failed";
         else if (job.status === STATUS.CANCELLED) terminal = "cancelled";
-        if (!terminal) return run;
+        if (!terminal) return { ...run, datasetRunUuid };
+
+        if (datasetRunUuid) {
+            await updateTemplateRunStatus(run.uuid, { datasetRunUuid });
+        }
 
         const finalized = await finalizeTemplateRun(run.uuid, terminal, {
             statistics: {
@@ -552,7 +577,7 @@ export class TemplateRunController {
                 failed: job.failed ?? 0,
             },
         });
-        return finalized ?? { ...run, status: terminal };
+        return finalized ?? { ...run, status: terminal, datasetRunUuid };
     }
 
     /** Shape a `template_runs` row into the public run resource + resource links. */
