@@ -280,9 +280,15 @@ print(response.json())
 
 When provided, each search result URL can be scraped with the given options (same fields as `/v1/scrape`, excluding top-level `url`). Note: browser-only options are ignored for non-browser scraping.
 
+For direct REST requests, an omitted `scrape_options.engine` defaults to `auto`, which selects `cheerio` or `playwright` for each result URL. The JavaScript SDK preserves its existing opt-in behavior: it omits `scrape_options` unless `engine` is explicitly provided. Use `scrape_options: { engine: "auto" }` to enable automatic follow-up scraping through the SDK.
+
+`auto` is resolved before a result is queued; it is not a separate scrape worker. The selector probes the page, then uses a cached domain decision when available. An unsuccessful probe selects `playwright` and records the reason without caching the failed probe. Explicit request options override scrape-template options, which in turn override API defaults.
+
+Follow-up scraping has a maximum 60-second window after the search pages return. A failed or timed-out follow-up leaves its original search row in the response; only successful follow-ups add scrape fields and incur follow-up credits. Operators can set `ANYCRAWL_SEARCH_FOLLOWUP_AUTO_ENABLED=false` to reject automatic follow-up requests with HTTP 503 before searching or charging, while ordinary search remains available.
+
 | Field               | Type                     | Default        | Notes                                                                                                                                       |
 | ------------------- | ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine`            | enum                     | -              | Scrape engine for result URLs: `auto`, `cheerio`, `playwright`, `puppeteer`                                                                 |
+| `engine`            | enum                     | `auto`         | Scrape engine for result URLs: `auto`, `cheerio`, `playwright`, `puppeteer`                                                                 |
 | `formats`           | array of enum            | `["markdown"]` | Output formats: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`, `links`                                          |
 | `timeout`           | number                   | `60000`        | Per-request timeout (ms)                                                                                                                    |
 | `wait_for`          | number                   | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                                 |

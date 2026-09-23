@@ -2,7 +2,8 @@ import { HttpClient } from "../HttpClient.js";
 import { log } from "@anycrawl/libs";
 import { DomainCache } from "./DomainCache.js";
 
-const cache = new DomainCache<{ engine: string }>("ac:engine");
+// Do not reuse domain decisions made before HTTP status/content-type validation.
+const cache = new DomainCache<{ engine: string }>("ac:engine:v2");
 
 export function analyzeHtmlForJSRequirement(rawHtml: string): {
     jsRequired: boolean;
@@ -94,7 +95,7 @@ export async function resolveAutoEngine(
     try {
         domain = new URL(url).hostname;
     } catch {
-        return "playwright";
+        throw new Error("Invalid URL for automatic engine selection");
     }
 
     const cached = await cache.get(domain);
@@ -105,7 +106,15 @@ export async function resolveAutoEngine(
             timeoutMs: 5000,
             retries: 0,
             requireProxy: !!proxy,
+            proxyMode: proxy,
         });
+        if (res.status < 200 || res.status >= 300) {
+            throw new Error(`Probe returned HTTP ${res.status}`);
+        }
+        const contentType = res.headers?.["content-type"] || "";
+        if (!/text\/html|text\/plain|application\/xhtml\+xml/i.test(contentType)) {
+            throw new Error(`Probe returned unsupported content type: ${contentType || "unknown"}`);
+        }
         const analysis = analyzeHtmlForJSRequirement(res.rawText || "");
         const engine = analysis.jsRequired ? "playwright" : "cheerio";
         cache.set(domain, { engine }).catch(() => {});
@@ -113,7 +122,11 @@ export async function resolveAutoEngine(
             `[AutoEngine] ${domain} -> ${engine} (score=${analysis.score}, reasons=${analysis.reasons.join(",")})`,
         );
         return engine;
-    } catch {
+    } catch (error) {
+        const reason = error instanceof Error && error.message.startsWith("Probe returned")
+            ? error.message
+            : error instanceof Error ? error.name : "unknown";
+        log.warning(`[AutoEngine] ${domain} probe failed (${reason}), selecting playwright`);
         return "playwright";
     }
 }

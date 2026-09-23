@@ -6,7 +6,7 @@ import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, esti
 import { randomUUID } from "crypto";
 import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, updateJobCacheHits, JOB_RESULT_STATUS, writeResultToDataset, assertDatasetWritable, parseDatasetOutput, standardDatasetMapping, DatasetWriteError, type ParsedDatasetOutput, type DatasetMapping } from "@anycrawl/db";
 import type { OwnerContext } from "@anycrawl/libs";
-import { QueueManager, CacheManager } from "@anycrawl/scrape";
+import { QueueManager, CacheManager, resolveAutoEngine } from "@anycrawl/scrape";
 import { TemplateHandler, validateVariables, applyVariableDefaults } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { mergeOptionsWithTemplate } from "../../utils/optionMerger.js";
@@ -177,10 +177,18 @@ export class SearchController {
                 mergedSearchScrapeOptions = mergeOptionsWithTemplate(
                     tr.templateOptions as Record<string, unknown>,
                     {
-                        ...validatedData.scrape_options,
+                        ...(requestData.scrape_options as Record<string, unknown>),
                         ...(variablesWithDefaults !== undefined ? { variables: variablesWithDefaults } : {}),
                     }
                 ) as typeof validatedData.scrape_options;
+                // Apply schema defaults only after user values have overridden the
+                // scrape template. Parsing first injects engine=auto and timeout=60s,
+                // accidentally replacing explicit template defaults.
+                // Scrape templates may also define url/retry, which are not
+                // follow-up options. Keep only the search endpoint's supported
+                // fields while applying its defaults to the merged values.
+                mergedSearchScrapeOptions = searchSchema.shape.scrape_options
+                    .unwrap().strip().parse(mergedSearchScrapeOptions);
                 scrapeFollowTemplatePerCall = TemplateHandler.reslovePrice(tr.template, "credits", "perCall");
                 if (!chargeScrapeTemplateCreditsForFollowup) {
                     scrapeFollowTemplatePerCall = 0;
@@ -188,6 +196,20 @@ export class SearchController {
                 scrapeFollowDomainRestriction = DomainValidator.parseDomainRestriction(
                     tr.template.metadata?.allowedDomains
                 );
+            }
+
+            // Operational stop switch for automatic follow-ups. Keep the rest
+            // of search available while preventing a bad release from creating
+            // another unconsumed queue; never return SERP-only data silently.
+            if (mergedSearchScrapeOptions?.engine === "auto" &&
+                process.env.ANYCRAWL_SEARCH_FOLLOWUP_AUTO_ENABLED === "false") {
+                req.creditsUsed = 0;
+                res.status(503).json({
+                    success: false,
+                    error: "SEARCH_AUTO_FOLLOWUP_DISABLED",
+                    message: "Automatic search result scraping is temporarily unavailable",
+                });
+                return;
             }
 
             const searchEstimatePayload = {
@@ -258,18 +280,10 @@ export class SearchController {
             );
 
             const expectedPages = validatedData.pages || 1;
-
-            let scrapeJobIds: string[] = [];
-            const scrapeJobCreationPromises: Promise<void>[] = [];
-            const scrapeCompletionPromises: Promise<{ url: string; data: any }>[] = [];
+            const successfulPages: { page: number; results: any[] }[] = [];
             let completedScrapeCount = 0;
-            let totalScrapeCount = 0; // Track total scrape tasks
-            // Global scrape limit control (if limit provided)
-            const shouldLimitScrape = typeof validatedData.limit === 'number' && validatedData.limit > 0;
-            let remainingScrape = shouldLimitScrape ? (validatedData.limit as number) : Number.POSITIVE_INFINITY;
-            const cachedScrapes: { url: string; data: any }[] = [];
-            const cacheConfig = getCacheConfig();
-            const cacheManager = CacheManager.getInstance();
+            let totalScrapeCount = 0;
+            let cacheHits = 0;
 
             const results = await this.searchService.search(validatedData.engine, {
                 query: validatedData.query,
@@ -282,170 +296,181 @@ export class SearchController {
                 sources: validatedData.sources,
                 safe_search: validatedData.safe_search,
             }, async (page, pageResults, _uniqueKey, success) => {
-                try {
-                    pagesProcessed += 1;
-                    if (!success) {
-                        failedPages += 1;
-                        // Record a failed page entry (single record per page)
+                pagesProcessed++;
+                if (!success) {
+                    failedPages++;
+                    try {
                         await insertJobResult(
                             searchJobId!,
                             `search:${engineName}:${validatedData.query}:page:${page}`,
                             { page, query: validatedData.query, results: [] },
                             JOB_RESULT_STATUS.FAILED
                         );
-                    } else {
-                        if (mergedSearchScrapeOptions) {
-                            const scrapeOptions = mergedSearchScrapeOptions;
-                            const engineForScrape = scrapeOptions.engine!;
-                            const maxAge = scrapeOptions.max_age;
-                            const effectiveMaxAge = maxAge ?? cacheConfig.defaultMaxAge;
-                            const shouldCheckCache =
-                                cacheConfig.pageCacheEnabled &&
-                                (maxAge === undefined || maxAge > 0) &&
-                                !scrapeOptions.template_id;
-                            const cacheOptions = {
-                                engine: engineForScrape,
-                                browser_runtime: getBrowserRuntimeForCache(engineForScrape),
-                                formats: scrapeOptions.formats,
-                                json_options: scrapeOptions.json_options,
-                                include_tags: scrapeOptions.include_tags,
-                                exclude_tags: scrapeOptions.exclude_tags,
-                                proxy: scrapeOptions.proxy,
-                                only_main_content: scrapeOptions.only_main_content,
-                                extract_source: scrapeOptions.extract_source,
-                                ocr_options: scrapeOptions.ocr_options,
-                                wait_for: scrapeOptions.wait_for,
-                                wait_until: scrapeOptions.wait_until,
-                                wait_for_selector: scrapeOptions.wait_for_selector,
-                                template_id: scrapeOptions.template_id,
-                                store_in_cache: scrapeOptions.store_in_cache,
-                            };
-                            // Respect global limit across pages
-                            const allowedCount = Math.max(0, Math.min(pageResults.length, remainingScrape));
-                            const toProcess = shouldLimitScrape ? pageResults.slice(0, allowedCount) : pageResults;
-                            for (const result of toProcess) {
-                                if (!result.url) continue; // Ensure url is a string for RequestTask
-                                const resultUrl = result.url as string;
-                                if (scrapeFollowDomainRestriction) {
-                                    const domainCheck = DomainValidator.validateDomain(
-                                        resultUrl,
-                                        scrapeFollowDomainRestriction
-                                    );
-                                    if (!domainCheck.isValid) {
-                                        continue;
+                    } catch (error) {
+                        log.error(`[SEARCH] Failed to persist failed page ${page}: ${error}`);
+                    }
+                    return;
+                }
+                successPages++;
+                // SearchService returns these same result objects. Store them after
+                // enrichment so the API, job results and Dataset agree.
+                successfulPages.push({ page, results: pageResults });
+            });
+
+            if (mergedSearchScrapeOptions && results.length > 0) {
+                const scrapeOptions = mergedSearchScrapeOptions;
+                const cacheConfig = getCacheConfig();
+                const cacheManager = CacheManager.getInstance();
+                const queueManager = QueueManager.getInstance();
+                const deadlineAt = Date.now() + 60_000;
+                const eligibleResults = (results as any[]).filter(result => {
+                    if (typeof result?.url !== "string") return false;
+                    if (!scrapeFollowDomainRestriction) return true;
+                    try {
+                        return DomainValidator.validateDomain(
+                            result.url, scrapeFollowDomainRestriction
+                        ).isValid;
+                    } catch {
+                        log.warning("[SEARCH] Skipping an invalid follow-up URL");
+                        return false;
+                    }
+                });
+                totalScrapeCount = eligibleResults.length;
+                let nextResult = 0;
+
+                const enrichOne = async (result: any): Promise<void> => {
+                    if (Date.now() >= deadlineAt) return;
+                    const resultUrl = result.url as string;
+                    try {
+                        const engine = scrapeOptions.engine === "auto"
+                            ? await resolveAutoEngine(resultUrl, scrapeOptions.proxy)
+                            : scrapeOptions.engine!;
+                        if (Date.now() >= deadlineAt) return;
+
+                        const maxAge = scrapeOptions.max_age;
+                        const shouldCheckCache = cacheConfig.pageCacheEnabled &&
+                            (maxAge === undefined || maxAge > 0) &&
+                            !scrapeOptions.template_id;
+                        const cacheOptions = {
+                            engine,
+                            browser_runtime: getBrowserRuntimeForCache(engine),
+                            formats: scrapeOptions.formats,
+                            json_options: scrapeOptions.json_options,
+                            include_tags: scrapeOptions.include_tags,
+                            exclude_tags: scrapeOptions.exclude_tags,
+                            proxy: scrapeOptions.proxy,
+                            only_main_content: scrapeOptions.only_main_content,
+                            extract_source: scrapeOptions.extract_source,
+                            ocr_options: scrapeOptions.ocr_options,
+                            wait_for: scrapeOptions.wait_for,
+                            wait_until: scrapeOptions.wait_until,
+                            wait_for_selector: scrapeOptions.wait_for_selector,
+                            template_id: scrapeOptions.template_id,
+                            store_in_cache: scrapeOptions.store_in_cache,
+                        };
+                        if (shouldCheckCache) {
+                            try {
+                                const cached = await cacheManager.getFromCache(
+                                    resultUrl, { ...cacheOptions, url: resultUrl }, maxAge
+                                );
+                                if (cached && Date.now() < deadlineAt) {
+                                    const data: any = { ...cached, maxAge: maxAge ?? cacheConfig.defaultMaxAge };
+                                    if ("fromCache" in data) delete data.fromCache;
+                                    if (data.screenshot && !String(data.screenshot).startsWith("http")) {
+                                        data.screenshot = `${process.env.ANYCRAWL_DOMAIN}/v1/public/storage/file/${data.screenshot}`;
                                     }
-                                }
-                                if (shouldCheckCache) {
-                                    const cached = await cacheManager.getFromCache(
-                                        resultUrl,
-                                        { ...cacheOptions, url: resultUrl },
-                                        maxAge
-                                    );
-                                    if (cached) {
-                                        const cachedData: any = { ...cached, maxAge: effectiveMaxAge };
-                                        if ("fromCache" in cachedData) delete cachedData.fromCache;
-                                        cachedScrapes.push({ url: resultUrl, data: cachedData });
-                                        totalScrapeCount++; // Count cached result as completed scrape
-                                        completedScrapeCount++;
-                                        if (shouldLimitScrape) remainingScrape -= 1;
-                                        if (remainingScrape <= 0) break;
-                                        continue;
+                                    if (data["screenshot@fullPage"] && !String(data["screenshot@fullPage"]).startsWith("http")) {
+                                        data["screenshot@fullPage"] = `${process.env.ANYCRAWL_DOMAIN}/v1/public/storage/file/${data["screenshot@fullPage"]}`;
                                     }
+                                    Object.assign(result, data);
+                                    completedScrapeCount++;
+                                    cacheHits++;
+                                    return;
                                 }
-                                const {
-                                    engine: _engine,
-                                    variables: templateVars,
-                                    ...optionsSansEngine
-                                } = scrapeOptions as typeof scrapeOptions & { variables?: Record<string, unknown> };
-                                const jobPayload = {
-                                    url: resultUrl,
-                                    engine: engineForScrape,
-                                    templateVariables: templateVars ?? {},
-                                    options: optionsSansEngine,
-                                    parentId: searchJobId,
-                                };
-                                log.info(`Scrape job payload: ${JSON.stringify(jobPayload)}`);
-                                const createTask = (async () => {
-                                    const scrapeJobId = await QueueManager.getInstance().addJob(`scrape-${engineForScrape}`, jobPayload);
-                                    // Don't create a separate job in the jobs table
-                                    // The scrape engine will record results directly to the search job
-                                    scrapeJobIds.push(scrapeJobId);
-                                    totalScrapeCount++; // Increment total scrape count
-                                    // prepare wait-for-completion promise for this job
-                                    scrapeCompletionPromises.push((async () => {
-                                        const job = await QueueManager.getInstance().waitJobDone(
-                                            `scrape-${engineForScrape}`,
-                                            scrapeJobId,
-                                            scrapeOptions.timeout || 60_000
-                                        );
-                                        // only merge when status is completed
-                                        if (!job || job.status !== 'completed' || job.error) {
-                                            return { url: resultUrl, data: null };
-                                        }
-                                        const { uniqueKey, queueName, options, engine, url: _url, type: _type, status: _status, ...jobData } = job as any;
-                                        return { url: resultUrl, data: jobData };
-                                    })());
-                                })();
-                                scrapeJobCreationPromises.push(createTask);
-                                if (shouldLimitScrape) remainingScrape -= 1;
-                                if (remainingScrape <= 0) break;
+                            } catch (cacheError) {
+                                log.warning(`[SEARCH] Cache read failed for ${resultUrl}: ${cacheError}`);
                             }
                         }
-                        successPages += 1;
-                        // Insert a single record for this page with aggregated results
-                        await insertJobResult(
-                            searchJobId!,
-                            `search:${engineName}:${validatedData.query}:page:${page}`,
-                            { page, query: validatedData.query, results: pageResults },
-                            JOB_RESULT_STATUS.SUCCESS
-                        );
-                    }
-
-                    // Update job counts based on pages for progress (include scrape tasks)
-                    const totalTasks = expectedPages + totalScrapeCount;
-                    const completedTasks = successPages + completedScrapeCount;
-                    const failedTasks = failedPages + (totalScrapeCount - completedScrapeCount);
-                    await updateJobCounts(searchJobId!, { total: totalTasks, completed: completedTasks, failed: failedTasks });
-                } catch (e) {
-                    log.error(`Per-page handler error for job_id=${searchJobId}: ${e instanceof Error ? e.message : String(e)}`);
-                }
-            });
-            // Ensure all scrape jobs have been enqueued before waiting for completion, then enrich results with scrape data
-            await Promise.all(scrapeJobCreationPromises);
-            if (scrapeCompletionPromises.length > 0 || cachedScrapes.length > 0) {
-                let successfulScrapes: { url: string; data: any }[] = [];
-                if (scrapeCompletionPromises.length > 0) {
-                    log.info(`Waiting for ${scrapeCompletionPromises.length} scrape jobs to complete, ${scrapeJobIds.join(", ")}`);
-                    const completedScrapes = await Promise.all(scrapeCompletionPromises);
-                    successfulScrapes = completedScrapes.filter(({ data }) => Boolean(data));
-                }
-                const allScrapes = [...cachedScrapes, ...successfulScrapes];
-                completedScrapeCount = allScrapes.length;
-                if (cachedScrapes.length > 0) {
-                    try {
-                        await updateJobCacheHits(searchJobId!, cachedScrapes.length);
-                    } catch (cacheUpdateError) {
-                        log.warning(`[SEARCH] Failed to update cache hits for job_id=${searchJobId}: ${cacheUpdateError}`);
-                    }
-                }
-                const urlToScrapeData = new Map<string, any>(allScrapes
-                    .map(({ url, data }) => [url, data])
-                );
-                for (const r of results as any[]) {
-                    if (r && r.url) {
-                        const data = urlToScrapeData.get(r.url);
-                        if (data) {
-                            // Add domain prefix to screenshot paths if they exist
+                        if (Date.now() >= deadlineAt) return;
+                        const { engine: _engine, variables: templateVars, ...optionsSansEngine } =
+                            scrapeOptions as typeof scrapeOptions & { variables?: Record<string, unknown> };
+                        const queueName = `scrape-${engine}`;
+                        const jobDeadlineAt = Math.min(deadlineAt, Date.now() + (scrapeOptions.timeout ?? 60_000));
+                        const jobId = await queueManager.addJob(queueName, {
+                            url: resultUrl,
+                            engine,
+                            templateVariables: templateVars ?? {},
+                            options: optionsSansEngine,
+                            parentId: searchJobId!,
+                            _anycrawlJobDeadlineAt: jobDeadlineAt,
+                        } as any);
+                        let accepted = false;
+                        try {
+                            const waitMs = jobDeadlineAt - Date.now();
+                            if (waitMs <= 0) return;
+                            const job = await queueManager.waitJobDone(queueName, jobId, waitMs);
+                            if (!job || job.status !== "completed" || job.error || Date.now() >= jobDeadlineAt) return;
+                            const { uniqueKey, queueName: _queueName, options, engine: _jobEngine,
+                                url: _url, type: _type, status: _status, _anycrawlJobDeadlineAt,
+                                ...data } = job as any;
                             if (data.screenshot) {
                                 data.screenshot = `${process.env.ANYCRAWL_DOMAIN}/v1/public/storage/file/${data.screenshot}`;
                             }
-                            if (data['screenshot@fullPage']) {
-                                data['screenshot@fullPage'] = `${process.env.ANYCRAWL_DOMAIN}/v1/public/storage/file/${data['screenshot@fullPage']}`;
+                            if (data["screenshot@fullPage"]) {
+                                data["screenshot@fullPage"] = `${process.env.ANYCRAWL_DOMAIN}/v1/public/storage/file/${data["screenshot@fullPage"]}`;
                             }
-                            Object.assign(r, data);
+                            Object.assign(result, data);
+                            completedScrapeCount++;
+                            accepted = true;
+                        } catch (error) {
+                            log.warning(`[SEARCH] Follow-up failed for ${resultUrl}: ${error}`);
+                        } finally {
+                            if (!accepted) {
+                                await queueManager.cancelJob(queueName, jobId).catch(() => {});
+                            }
+                        }
+                    } catch (error) {
+                        log.warning(`[SEARCH] Follow-up setup failed for ${resultUrl}: ${error}`);
+                    }
+                };
+
+                await Promise.all(Array.from(
+                    { length: Math.min(5, eligibleResults.length) },
+                    async () => {
+                        while (nextResult < eligibleResults.length && Date.now() < deadlineAt) {
+                            const result = eligibleResults[nextResult++];
+                            await enrichOne(result);
                         }
                     }
+                ));
+                if (cacheHits > 0) {
+                    await updateJobCacheHits(searchJobId, cacheHits).catch(error =>
+                        log.warning(`[SEARCH] Failed to record ${cacheHits} cache hits: ${error}`)
+                    );
                 }
+            }
+
+            const returnedResults = new Set(results);
+            for (const { page, results: pageResults } of successfulPages) {
+                try {
+                    await insertJobResult(
+                        searchJobId,
+                        `search:${engineName}:${validatedData.query}:page:${page}`,
+                        { page, query: validatedData.query, results: pageResults.filter(result => returnedResults.has(result)) },
+                        JOB_RESULT_STATUS.SUCCESS
+                    );
+                } catch (error) {
+                    log.error(`[SEARCH] Failed to persist page ${page} for ${searchJobId}: ${error}`);
+                }
+            }
+            try {
+                await updateJobCounts(searchJobId, {
+                    total: expectedPages + totalScrapeCount,
+                    completed: successPages + completedScrapeCount,
+                    failed: failedPages + totalScrapeCount - completedScrapeCount,
+                });
+            } catch (error) {
+                log.error(`[SEARCH] Failed to update counts for ${searchJobId}: ${error}`);
             }
             // Calculate credits using CreditCalculator
             req.billingChargeDetails = CreditCalculator.buildSearchChargeDetails({

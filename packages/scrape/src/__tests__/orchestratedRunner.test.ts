@@ -125,6 +125,7 @@ jest.unstable_mockModule("@anycrawl/db", () => ({
             warnings: [],
         };
     },
+    finalizeCrawlDatasetRun: async () => {},
     createJob: async () => { },
     getJobResults: async () => [{ url: "https://sfbay.craigslist.org/page", status: "success", data: jobResultData }],
     getDB: async () => ({
@@ -146,12 +147,18 @@ jest.unstable_mockModule("@anycrawl/db", () => ({
 // but the response happened to be reused across workers".
 // ---------------------------------------------------------------------------
 let addJobCount = 0;
+const queuedScrapes: Array<{ queue: string; data: any }> = [];
+const resolveEngine = jest.fn(async (_url: string, _proxy?: string) => "playwright");
 let inFlightFetches = 0;
 let maxInFlightFetches = 0;
+jest.unstable_mockModule("./src/utils/autoEngine.js", () => ({ resolveAutoEngine: resolveEngine }));
 jest.unstable_mockModule("./src/managers/Queue.js", () => ({
     QueueManager: {
         getInstance: () => ({
-            addJob: async () => `scrape-job-${++addJobCount}`,
+            addJob: async (queue: string, data: any) => {
+                queuedScrapes.push({ queue, data });
+                return `scrape-job-${++addJobCount}`;
+            },
             waitJobDone: async () => {
                 inFlightFetches++;
                 maxInFlightFetches = Math.max(maxInFlightFetches, inFlightFetches);
@@ -197,12 +204,26 @@ describe("OrchestratedRunner", () => {
         events = [];
         runStatus = "running";
         addJobCount = 0;
+        queuedScrapes.length = 0;
+        resolveEngine.mockClear();
         inFlightFetches = 0;
         maxInFlightFetches = 0;
         jobResultData = { rawHtml: "<html></html>", markdown: "# page" };
         validateDomainImpl = () => ({ isValid: true });
         seedHandlerImpl = async () => ({
             seeds: [{ seedKey: "s1", url: "https://sfbay.craigslist.org/search/sss" }],
+        });
+    });
+
+    it("routes an auto template page through a concrete scrape worker", async () => {
+        const url = "https://sfbay.craigslist.org/search/sss";
+        await (new OrchestratedRunner() as any).fetchPage(
+            "auto", url, basePayload({ engine: "auto" }), { proxy: "auto" }
+        );
+        expect(resolveEngine).toHaveBeenCalledWith(url, "auto");
+        expect(queuedScrapes[0]).toMatchObject({
+            queue: "scrape-playwright",
+            data: { url, engine: "playwright" },
         });
     });
 

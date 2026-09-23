@@ -18,6 +18,7 @@ import {
     schemas,
 } from "@anycrawl/db";
 import { QueueManager } from "../managers/Queue.js";
+import { resolveAutoEngine } from "../utils/autoEngine.js";
 import type { TemplateRunJobPayload } from "../managers/Queue.js";
 
 // ---------------------------------------------------------------------------
@@ -577,7 +578,10 @@ export class OrchestratedRunner {
     ): Promise<FetchedPage> {
         if (this.fetchPageImpl) return this.fetchPageImpl(engine, url, payload);
 
-        const queueName = `scrape-${engine}`;
+        const concreteEngine = engine === "auto"
+            ? await resolveAutoEngine(url, (reqOptions as any)?.proxy)
+            : engine;
+        const queueName = `scrape-${concreteEngine}`;
         const scrapeTimeout =
             Number((reqOptions as any)?.timeout) ||
             Number((payload.runOptions as any)?.request_timeout_ms) ||
@@ -595,7 +599,7 @@ export class OrchestratedRunner {
 
         const jobId = await QueueManager.getInstance().addJob(queueName, {
             url,
-            engine: engine as any,
+            engine: concreteEngine as any,
             type: "scrape",
             options: { ...restReqOptions, formats, timeout: scrapeTimeout },
         });
@@ -616,7 +620,7 @@ export class OrchestratedRunner {
                         user: payload.dataset?.owner?.userId ?? payload.ownerContext?.userId,
                     },
                 },
-                payload: { url, engine },
+                payload: { url, engine: concreteEngine },
             });
         } catch (e) {
             log.warning(`[template-run] failed to create backing job row for ${url}: ${e}`);
