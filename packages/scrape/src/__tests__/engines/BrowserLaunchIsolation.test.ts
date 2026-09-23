@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { BrowserLaunchError, Configuration, PlaywrightCrawler, PuppeteerCrawler } from 'crawlee';
 import { ResilientPlaywrightCrawler, ResilientPuppeteerCrawler } from '../../engines/ResilientBrowserCrawler.js';
 
-afterEach(() => jest.restoreAllMocks());
+afterEach(() => { jest.restoreAllMocks(); });
 
-describe.each([
+const launchCases: Array<[string, typeof PlaywrightCrawler | typeof PuppeteerCrawler,
+    typeof ResilientPlaywrightCrawler | typeof ResilientPuppeteerCrawler]> = [
     ['playwright', PlaywrightCrawler, ResilientPlaywrightCrawler],
     ['puppeteer', PuppeteerCrawler, ResilientPuppeteerCrawler],
-] as const)('%s launch failure', (_name, Parent, Resilient) => {
+];
+
+describe.each(launchCases)('%s launch failure', (_name, Parent, Resilient) => {
     it('fails one request and continues consuming the next in the real Crawlee loop', async () => {
         const handled: string[] = [];
         const failed: string[] = [];

@@ -17,6 +17,16 @@ export interface HttpClientOptions {
     requireProxy?: boolean; // default true
     cookieHeader?: string;
     proxy?: string; // per-request override, e.g. http://user:pass@host:port
+    proxyMode?: string; // request proxy policy used by the crawler (auto/base/stealth/custom)
+}
+
+export function createProxySelectionRequest(url: string, proxyMode?: string): Request {
+    return new Request({
+        url,
+        userData: proxyMode
+            ? { options: { proxy: proxyMode }, original_url: url }
+            : {},
+    });
 }
 
 export async function request<T = any>(method: HttpMethod, url: string, opts?: HttpClientOptions): Promise<HttpResponse<T>> {
@@ -58,7 +68,7 @@ export async function request<T = any>(method: HttpMethod, url: string, opts?: H
         if (requireProxy) {
             proxyUrl = normalizeProxyUrl(opts?.proxy);
             if (!proxyUrl) {
-                const req = new Request({ url });
+                const req = createProxySelectionRequest(url, opts?.proxyMode);
                 // Ask proxy configuration for a fresh proxy each attempt, stepping tiers like browser engines
                 const tier = attemptIndex - 1; // 0-based tier index
                 try {
@@ -127,4 +137,3 @@ export const HttpClient = {
     put: <T = any>(url: string, opts?: HttpClientOptions) => request<T>('PUT', url, opts),
     delete: <T = any>(url: string, opts?: HttpClientOptions) => request<T>('DELETE', url, opts),
 };
-

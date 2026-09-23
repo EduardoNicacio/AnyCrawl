@@ -155,6 +155,9 @@ export class QueueManager {
      * @param data Job data
      */
     public async addJob(queueName: QueueName, data: RequestTask): Promise<string> {
+        if (/^(scrape|crawl)-auto$/.test(queueName)) {
+            throw new Error(`Cannot enqueue a virtual auto engine job to ${queueName}; resolve the URL to a concrete engine first`);
+        }
         const queue = this.getQueue(queueName);
         const jobId = randomUUID();
         log.info(`Adding job to queue ${queueName} with jobId ${jobId}`);
@@ -265,7 +268,7 @@ export class QueueManager {
     public async getJobStatus(
         queueName: QueueName,
         jobId: string
-    ): Promise<{ status: string; task_status: string; data: any } | null> {
+    ): Promise<{ status: string; task_status: string; data: any; failedReason?: string } | null> {
         const job = await this.getJob(queueName, jobId);
 
         if (!job) {
@@ -277,6 +280,7 @@ export class QueueManager {
             status: state,
             task_status: job.data.status,
             data: job.data,
+            failedReason: job.failedReason,
         };
     }
 
@@ -294,6 +298,7 @@ export class QueueManager {
         // Consider the job done when BullMQ marks it completed or failed.
         // Some engines may mark failures via task_status while keeping BullMQ state as completed;
         // both cases should resolve the waiter.
+        if (state?.status === "failed") return true;
         if (state?.status === "completed" &&
             (state?.task_status === "completed" || state?.task_status === "failed")) {
             return true;
@@ -354,8 +359,18 @@ export class QueueManager {
                     const isJobDone = await QueueManager.getInstance().isJobDone(queueName, jobId);
                     if (settled) return;
                     if (isJobDone) {
+                        const state = await QueueManager.getInstance().getJobStatus(queueName, jobId);
+                        if (settled) return;
                         cleanup();
-                        const data = await QueueManager.getInstance().getJobData(queueName, jobId);
+                        if (!state) {
+                            reject(new Error(`Queue job ${jobId} disappeared before its result was read`));
+                            return;
+                        }
+                        if (state.status === "failed") {
+                            reject(new Error(state.failedReason || `Queue job ${jobId} failed`));
+                            return;
+                        }
+                        const data = state.data;
                         log.info(`[${queueName}] checkJob: ${jobId} done`);
                         resolve(data);
                     } else {

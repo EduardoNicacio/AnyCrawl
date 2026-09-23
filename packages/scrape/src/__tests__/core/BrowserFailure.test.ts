@@ -54,7 +54,7 @@ describe('browser startup failure isolation', () => {
         const serialized = JSON.stringify(details);
         expect(details.causes).toHaveLength(2);
         expect(serialized).not.toMatch(/password|SECRET|token=secret/);
-        expect(details.causes[1].stack.length).toBeLessThanOrEqual(6000);
+        expect(details.causes[1]?.stack?.length ?? 0).toBeLessThanOrEqual(6000);
         expect(JSON.stringify(browserFailureDetails(new BrowserStartupError(outer)))).not.toMatch(/password|SECRET|token=secret/);
     });
 });
