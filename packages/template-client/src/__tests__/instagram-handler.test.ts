@@ -35,9 +35,12 @@ describe('published Instagram handler', () => {
   });
 
   it('fails when a profile page has no public profile data', async () => {
+    const wait = jest.fn(async () => undefined);
     await expect(run({
       request: { url: 'https://www.instagram.com/masonthames/' },
       html: '<html></html>',
+      preNav: { has: async () => false, wait },
     })).rejects.toThrow('No public Instagram data was extracted');
+    expect(wait).toHaveBeenCalledWith('instagramProfileInfo', { timeoutMs: 3000 });
   });
 });

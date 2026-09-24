@@ -1,13 +1,15 @@
-const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_timeline') => {
+-- Bound the legacy profile API wait to preserve a useful extraction error.
+UPDATE `templates`
+SET `custom_handlers` = json_set(`custom_handlers`, '$.requestHandler.code.source', 'const extractKeyedPayloadFromHtml = (html, targetKey = ''xdt_api__v1__profile_timeline'') => {
     const results = [];
-    if (typeof html !== 'string' || html.length === 0) return results;
+    if (typeof html !== ''string'' || html.length === 0) return results;
 
     const matches = [];
     // Only target <script type="application/json" data-sjs ...>
-    const scriptRe = /<script(?=[^>]*type=["']application\/json["'])(?=[^>]*\bdata-sjs\b)[^>]*>([\s\S]*?)<\/script>/gi;
+    const scriptRe = /<script(?=[^>]*type=["'']application\/json["''])(?=[^>]*\bdata-sjs\b)[^>]*>([\s\S]*?)<\/script>/gi;
     let m;
     while ((m = scriptRe.exec(html)) !== null) {
-        const inner = (m[1] || '').trim();
+        const inner = (m[1] || '''').trim();
         if (!inner) continue;
         // Prefilter by key presence to avoid parsing large irrelevant blobs
         if (inner.indexOf(targetKey) === -1) continue;
@@ -17,20 +19,20 @@ const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_tim
     const foundTimelines = [];
     const pushIfMatch = (maybeObj, source) => {
         try {
-            if (!maybeObj || typeof maybeObj !== 'object') return;
+            if (!maybeObj || typeof maybeObj !== ''object'') return;
             const direct = maybeObj?.[targetKey];
             if (direct) {
-                foundTimelines.push({ source: source || 'direct', payload: direct });
+                foundTimelines.push({ source: source || ''direct'', payload: direct });
                 return;
             }
             const inData = maybeObj?.data?.[targetKey];
             if (inData) {
-                foundTimelines.push({ source: source || 'data', payload: inData });
+                foundTimelines.push({ source: source || ''data'', payload: inData });
                 return;
             }
             const inBbox = maybeObj?.__bbox?.result?.data?.[targetKey];
             if (inBbox) {
-                foundTimelines.push({ source: source || '__bbox', payload: inBbox });
+                foundTimelines.push({ source: source || ''__bbox'', payload: inBbox });
                 return;
             }
         } catch (_) { }
@@ -42,7 +44,7 @@ const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_tim
             for (const n of node) traverse(n, source);
             return;
         }
-        if (typeof node === 'object') {
+        if (typeof node === ''object'') {
             for (const key of Object.keys(node)) {
                 try { traverse(node[key], source); } catch (_) { }
             }
@@ -52,7 +54,7 @@ const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_tim
     for (const raw of matches) {
         try {
             const obj = JSON.parse(raw);
-            traverse(obj, 'html-script');
+            traverse(obj, ''html-script'');
         } catch (_) { }
     }
 
@@ -60,13 +62,13 @@ const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_tim
     const seen = new Set();
     for (const r of foundTimelines) {
         const tl = r?.payload;
-        if (!tl || typeof tl !== 'object') continue;
+        if (!tl || typeof tl !== ''object'') continue;
         const key = (() => {
             try { return tl?.sections?.[0]?.feed_view_info?.session_id || tl?.timeline?.id || JSON.stringify(Object.keys(tl).sort()); } catch (_) { return Math.random().toString(36); }
         })();
         if (seen.has(key)) continue;
         seen.add(key);
-        timelineItems.push({ type: 'ig_script_payload', key: targetKey, source: r?.source || 'html', data: tl });
+        timelineItems.push({ type: ''ig_script_payload'', key: targetKey, source: r?.source || ''html'', data: tl });
     }
 
     return timelineItems;
@@ -75,25 +77,25 @@ const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_tim
 // Logged-out profile pages now preload public profile data under
 // xig_user_by_username instead of requesting web_profile_info.
 const extractProfileFromHtml = (html, username) => {
-    if (typeof html !== 'string' || !html || !username) return null;
-    const scripts = /<script(?=[^>]*type=["']application\/json["'])(?=[^>]*\bdata-sjs\b)[^>]*>([\s\S]*?)<\/script>/gi;
+    if (typeof html !== ''string'' || !html || !username) return null;
+    const scripts = /<script(?=[^>]*type=["'']application\/json["''])(?=[^>]*\bdata-sjs\b)[^>]*>([\s\S]*?)<\/script>/gi;
     let match;
     while ((match = scripts.exec(html)) !== null) {
-        const raw = match[1] || '';
-        if (!raw.includes('xig_user_by_username') || raw.length > 1_000_000) continue;
+        const raw = match[1] || '''';
+        if (!raw.includes(''xig_user_by_username'') || raw.length > 1_000_000) continue;
         try {
             const pending = [JSON.parse(raw)];
             let visited = 0;
             while (pending.length && visited++ < 30_000) {
                 const value = pending.pop();
-                if (!value || typeof value !== 'object') continue;
+                if (!value || typeof value !== ''object'') continue;
                 const user = value.xig_user_by_username;
-                if (user && typeof user === 'object' &&
-                    String(user.username || '').toLowerCase() === username.toLowerCase()) {
+                if (user && typeof user === ''object'' &&
+                    String(user.username || '''').toLowerCase() === username.toLowerCase()) {
                     return user;
                 }
                 for (const child of Object.values(value)) {
-                    if (child && typeof child === 'object') pending.push(child);
+                    if (child && typeof child === ''object'') pending.push(child);
                 }
             }
         } catch (_) { /* Ignore unrelated preloaded scripts. */ }
@@ -104,57 +106,57 @@ const extractProfileFromHtml = (html, username) => {
 const scrapeInstagram = async (context) => {
     const page = context.page;
     const preNav = context.preNav;
-    const url = page ? await page.url() : (context.request?.url || '');
-    const log = (...args) => console.log('[IG-SCRAPER]', ...args);
+    const url = page ? await page.url() : (context.request?.url || '''');
+    const log = (...args) => console.log(''[IG-SCRAPER]'', ...args);
 
-    log('Starting extraction for URL:', url);
+    log(''Starting extraction for URL:'', url);
 
     let jsonResult = [];
 
     const isInstagramProfileUrl = (() => {
-        if (!url || typeof url !== 'string') return false;
+        if (!url || typeof url !== ''string'') return false;
         const pattern = /^https?:\/\/(?:[\w-]+\.)?instagram\.com\/[\w.\-]+\/?(?:\?.*)?(?:#.*)?$/i;
         return pattern.test(url.trim());
     })();
 
     const isInstagramReelUrl = (() => {
-        if (!url || typeof url !== 'string') return false;
+        if (!url || typeof url !== ''string'') return false;
         // Match /reel/CODE, /p/CODE (post), and /username/reel/CODE
         const pattern = /^https?:\/\/(?:[\w-]+\.)?instagram\.com\/(?:(?:reel|p)\/+|[\w.\-]+\/reel\/+)[A-Za-z0-9_-]+\/?(?:\?.*)?(?:#.*)?$/i;
         return pattern.test(url.trim());
     })();
 
-    log('URL type:', isInstagramProfileUrl ? 'profile' : isInstagramReelUrl ? 'reel' : 'unknown');
+    log(''URL type:'', isInstagramProfileUrl ? ''profile'' : isInstagramReelUrl ? ''reel'' : ''unknown'');
 
     if (isInstagramProfileUrl) {
-        const username = url.match(/instagram\.com\/([\w.\-]+)/i)?.[1] || '';
+        const username = url.match(/instagram\.com\/([\w.\-]+)/i)?.[1] || '''';
         const preloadedUser = extractProfileFromHtml(context.html, username);
         try {
-            log('Fetching instagramProfileInfo via preNav...');
+            log(''Fetching instagramProfileInfo via preNav...'');
             let profileInfo;
-            if (preNav && typeof preNav === 'object') {
-                const exists = await (preNav.has?.('instagramProfileInfo'));
-                log('preNav has instagramProfileInfo:', exists);
+            if (preNav && typeof preNav === ''object'') {
+                const exists = await (preNav.has?.(''instagramProfileInfo''));
+                log(''preNav has instagramProfileInfo:'', exists);
                 if (exists) {
-                    profileInfo = await (preNav.get?.('instagramProfileInfo'));
+                    profileInfo = await (preNav.get?.(''instagramProfileInfo''));
                 } else if (!preloadedUser) {
-                    log('Waiting briefly for instagramProfileInfo (timeout: 3s)...');
-                    profileInfo = await (preNav.wait?.('instagramProfileInfo', { timeoutMs: 3000 }));
+                    log(''Waiting briefly for instagramProfileInfo (timeout: 3s)...'');
+                    profileInfo = await (preNav.wait?.(''instagramProfileInfo'', { timeoutMs: 3000 }));
                 }
             }
 
             if (!profileInfo?.body) {
-                log('preNav instagramProfileInfo returned empty');
-                console.warn('preNav instagramProfileInfo returned empty');
+                log(''preNav instagramProfileInfo returned empty'');
+                console.warn(''preNav instagramProfileInfo returned empty'');
             } else {
-                log('Got instagramProfileInfo body, length:', profileInfo.body.length);
+                log(''Got instagramProfileInfo body, length:'', profileInfo.body.length);
                 const res = JSON.parse(profileInfo.body);
                 const user = res?.data?.user;
                 if (!user) {
-                    log('No user data in web_profile_info response. Keys:', Object.keys(res?.data || {}));
-                    console.warn('No user data in web_profile_info response');
+                    log(''No user data in web_profile_info response. Keys:'', Object.keys(res?.data || {}));
+                    console.warn(''No user data in web_profile_info response'');
                 } else {
-                    log('User found:', user.username, '| posts:', user.edge_owner_to_timeline_media?.count, '| followers:', user.edge_followed_by?.count);
+                    log(''User found:'', user.username, ''| posts:'', user.edge_owner_to_timeline_media?.count, ''| followers:'', user.edge_followed_by?.count);
 
                     const buildUserMeta = (u) => ({
                         username: u.username,
@@ -178,7 +180,7 @@ const scrapeInstagram = async (context) => {
 
                     const buildNodeItem = (node) => ({
                         reel_id: node.shortcode,
-                        full_text: node.edge_media_to_caption?.edges?.[0]?.node?.text ?? '',
+                        full_text: node.edge_media_to_caption?.edges?.[0]?.node?.text ?? '''',
                         video: node.video_url,
                         image: node.thumbnail_src,
                         token_at: node.taken_at_timestamp,
@@ -211,33 +213,33 @@ const scrapeInstagram = async (context) => {
                     });
 
                     const timelineEdges = user.edge_owner_to_timeline_media?.edges || [];
-                    log('Timeline edges count:', timelineEdges.length);
+                    log(''Timeline edges count:'', timelineEdges.length);
                     for (const edge of timelineEdges) {
                         if (edge?.node) jsonResult.push(buildNodeItem(edge.node));
                     }
 
                     const reelEdges = user.edge_felix_video_timeline?.edges || [];
-                    log('Reel edges count:', reelEdges.length);
+                    log(''Reel edges count:'', reelEdges.length);
                     for (const edge of reelEdges) {
                         if (edge?.node) jsonResult.push(buildNodeItem(edge.node));
                     }
-                    log('Profile extraction done, total items:', jsonResult.length);
+                    log(''Profile extraction done, total items:'', jsonResult.length);
                 }
             }
         } catch (err) {
-            log('Profile extraction error:', err?.message || err);
-            console.error('Instagram profile extraction failed:', err?.message || err);
+            log(''Profile extraction error:'', err?.message || err);
+            console.error(''Instagram profile extraction failed:'', err?.message || err);
         }
 
         if (jsonResult.length === 0) {
             const user = preloadedUser;
             if (user) {
                 jsonResult.push({
-                    type: 'profile',
+                    type: ''profile'',
                     username: user.username,
-                    full_name: user.full_name || '',
-                    biography: user.biography || '',
-                    profile_pic_url: user.profile_pic_url || '',
+                    full_name: user.full_name || '''',
+                    biography: user.biography || '''',
+                    profile_pic_url: user.profile_pic_url || '''',
                     followers_count: user.follower_count ?? null,
                     following_count: user.following_count ?? null,
                     posts_count: user.all_media_count ?? null,
@@ -245,19 +247,19 @@ const scrapeInstagram = async (context) => {
                     is_private: !!user.is_private,
                     url,
                 });
-                log('Profile extracted from page preload:', user.username);
+                log(''Profile extracted from page preload:'', user.username);
             }
         }
     }
 
     if (isInstagramReelUrl) {
         try {
-            const html = typeof context.html === 'string' ? context.html : '';
-            log('Reel HTML length:', html.length);
+            const html = typeof context.html === ''string'' ? context.html : '''';
+            log(''Reel HTML length:'', html.length);
 
-            let commentsItems = extractKeyedPayloadFromHtml(html, 'xdt_api__v1__media__media_id__comments__connection');
-            let webInfo = extractKeyedPayloadFromHtml(html, 'xdt_api__v1__media__shortcode__web_info');
-            log('Comments payloads found:', commentsItems.length, '| webInfo payloads found:', webInfo.length);
+            let commentsItems = extractKeyedPayloadFromHtml(html, ''xdt_api__v1__media__media_id__comments__connection'');
+            let webInfo = extractKeyedPayloadFromHtml(html, ''xdt_api__v1__media__shortcode__web_info'');
+            log(''Comments payloads found:'', commentsItems.length, ''| webInfo payloads found:'', webInfo.length);
 
             const edgesRaw = commentsItems?.[0]?.data?.edges;
             const edgesContainer = edgesRaw || {};
@@ -277,17 +279,17 @@ const scrapeInstagram = async (context) => {
                     is_unpublished: edge?.node?.user?.is_unpublished,
                 }
             }));
-            log('Parsed comments count:', parsedComments.length);
+            log(''Parsed comments count:'', parsedComments.length);
 
             const webInfoItem = webInfo?.[0]?.data?.items?.[0];
             if (webInfoItem) {
                 const u = webInfoItem.user || {};
-                log('Reel webInfoItem found, code:', webInfoItem.code, '| user:', u.username);
+                log(''Reel webInfoItem found, code:'', webInfoItem.code, ''| user:'', u.username);
                 jsonResult.push({
                     reel_id: webInfoItem.code,
-                    full_text: webInfoItem.caption?.text ?? '',
-                    video: webInfoItem.video_versions?.[0]?.url ?? '',
-                    image: webInfoItem.image_versions2?.candidates?.[0]?.url ?? '',
+                    full_text: webInfoItem.caption?.text ?? '''',
+                    video: webInfoItem.video_versions?.[0]?.url ?? '''',
+                    image: webInfoItem.image_versions2?.candidates?.[0]?.url ?? '''',
                     token_at: webInfoItem.taken_at,
                     token_at_utc: webInfoItem.taken_at ? new Date(webInfoItem.taken_at * 1000).toISOString() : null,
                     user: {
@@ -326,62 +328,62 @@ const scrapeInstagram = async (context) => {
                     original_width: webInfoItem.original_width,
                     is_video: !!webInfoItem.video_versions?.length,
                 });
-                log('Reel item added to jsonResult');
+                log(''Reel item added to jsonResult'');
             } else {
-                log('No web_info item found in HTML for reel URL. webInfo raw:', JSON.stringify(webInfo?.[0]?.data?.items?.slice(0, 2)));
-                console.warn('No web_info item found in HTML for reel URL');
+                log(''No web_info item found in HTML for reel URL. webInfo raw:'', JSON.stringify(webInfo?.[0]?.data?.items?.slice(0, 2)));
+                console.warn(''No web_info item found in HTML for reel URL'');
             }
         } catch (err) {
-            log('Reel extraction error:', err?.message || err);
-            console.error('Instagram reel extraction failed:', err?.message || err);
+            log(''Reel extraction error:'', err?.message || err);
+            console.error(''Instagram reel extraction failed:'', err?.message || err);
         }
     }
 
     const buildReelMarkdown = (it) => {
-        const stats = `Likes ${it.like_count ?? 0} · Comments ${it.comment_count ?? 0}${typeof it.fb_comment_count === 'number' ? ` · FB Comments ${it.fb_comment_count}` : ''}`;
-        const createdAt = it.create_at || it.token_at_utc || '';
-        const imageUrl = it.image || it.display_uri || '';
-        const videoUrl = it.video || '';
+        const stats = `Likes ${it.like_count ?? 0} · Comments ${it.comment_count ?? 0}${typeof it.fb_comment_count === ''number'' ? ` · FB Comments ${it.fb_comment_count}` : ''''}`;
+        const createdAt = it.create_at || it.token_at_utc || '''';
+        const imageUrl = it.image || it.display_uri || '''';
+        const videoUrl = it.video || '''';
         const user = it.user || {};
         const owner = it.owner || {};
         const tagsMd = Array.isArray(it.usertags) && it.usertags.length
             ? `\n\n## Tags\n\n${it.usertags.map(t => {
                 const u = t.user || {};
-                const uname = u.username ? `@${u.username}` : (u.full_name || '');
+                const uname = u.username ? `@${u.username}` : (u.full_name || '''');
                 return `- ${uname}`;
-            }).join('\n')}`
-            : '';
+            }).join(''\n'')}`
+            : '''';
         const commentsMd = Array.isArray(it.comments) && it.comments.length
             ? `\n\n## Comments\n\n${it.comments.map(c => {
-                const uname = c?.user?.username ? `@${c.user.username}` : '';
-                const likes = typeof c?.comment_like_count === 'number' ? ` · Likes ${c.comment_like_count}` : '';
-                const ts = c?.created_at ? ` · ${c.created_at}` : '';
-                return `- ${uname}${likes}${ts}\n  ${c?.text || ''}`;
-            }).join('\n')}`
-            : '';
+                const uname = c?.user?.username ? `@${c.user.username}` : '''';
+                const likes = typeof c?.comment_like_count === ''number'' ? ` · Likes ${c.comment_like_count}` : '''';
+                const ts = c?.created_at ? ` · ${c.created_at}` : '''';
+                return `- ${uname}${likes}${ts}\n  ${c?.text || ''''}`;
+            }).join(''\n'')}`
+            : '''';
         const mediaMd = (() => {
             if (imageUrl && videoUrl) return `\n\n## Media\n\n![Image](${imageUrl})\n\nVideo: ${videoUrl}`;
             if (imageUrl) return `\n\n## Media\n\n![Image](${imageUrl})`;
             if (videoUrl) return `\n\n## Media\n\nVideo: ${videoUrl}`;
-            return '';
+            return '''';
         })();
-        const userSection = `## User\n\n- username: ${user.username || ''}\n- full_name: ${user.full_name || ''}\n- is_verified: ${user.is_verified ?? ''}\n- is_private: ${user.is_private ?? ''}\n- profile_pic_url: ${user.profile_pic_url || ''}`;
+        const userSection = `## User\n\n- username: ${user.username || ''''}\n- full_name: ${user.full_name || ''''}\n- is_verified: ${user.is_verified ?? ''''}\n- is_private: ${user.is_private ?? ''''}\n- profile_pic_url: ${user.profile_pic_url || ''''}`;
         const ownerSection = owner && (owner.username || owner.full_name)
-            ? `\n\n## Owner\n\n- full_name: ${owner.full_name || ''}\n- username: ${owner.username || ''}\n- is_verified: ${owner.is_verified ?? ''}\n- profile_pic_url: ${owner.profile_pic_url || ''}`
-            : '';
-        const locationLine = it.location ? `\n\n- Location: ${typeof it.location === 'string' ? it.location : (it.location?.name || '')}` : '';
-        return `### ${it.reel_id || ''}\nURL: ${url}\nCreated At: ${createdAt}\nStats: ${stats}${locationLine}\n\n## Content\n\n\`\`\`\n${it.full_text || ''}\n\`\`\`${mediaMd}\n\n${userSection}${ownerSection}${tagsMd}${commentsMd}`;
+            ? `\n\n## Owner\n\n- full_name: ${owner.full_name || ''''}\n- username: ${owner.username || ''''}\n- is_verified: ${owner.is_verified ?? ''''}\n- profile_pic_url: ${owner.profile_pic_url || ''''}`
+            : '''';
+        const locationLine = it.location ? `\n\n- Location: ${typeof it.location === ''string'' ? it.location : (it.location?.name || '''')}` : '''';
+        return `### ${it.reel_id || ''''}\nURL: ${url}\nCreated At: ${createdAt}\nStats: ${stats}${locationLine}\n\n## Content\n\n\`\`\`\n${it.full_text || ''''}\n\`\`\`${mediaMd}\n\n${userSection}${ownerSection}${tagsMd}${commentsMd}`;
     };
 
-    let markdown = '';
+    let markdown = '''';
     if (Array.isArray(jsonResult) && jsonResult.length) {
         if (jsonResult.length === 1) {
             const it = jsonResult[0];
-            markdown = it.type === 'profile'
-                ? `# ${it.full_name || it.username} (@${it.username})\n\n${it.biography || ''}\n\n- Followers: ${it.followers_count ?? 'unknown'}\n- Following: ${it.following_count ?? 'unknown'}\n- Posts: ${it.posts_count ?? 'unknown'}\n- Verified: ${it.is_verified ? 'yes' : 'no'}\n- URL: ${url}`
-                : `# Instagram Reel ${it.reel_id || ''}\n\n${buildReelMarkdown(it)}`;
+            markdown = it.type === ''profile''
+                ? `# ${it.full_name || it.username} (@${it.username})\n\n${it.biography || ''''}\n\n- Followers: ${it.followers_count ?? ''unknown''}\n- Following: ${it.following_count ?? ''unknown''}\n- Posts: ${it.posts_count ?? ''unknown''}\n- Verified: ${it.is_verified ? ''yes'' : ''no''}\n- URL: ${url}`
+                : `# Instagram Reel ${it.reel_id || ''''}\n\n${buildReelMarkdown(it)}`;
         } else {
-            const itemsMd = jsonResult.map(buildReelMarkdown).join('\n\n');
+            const itemsMd = jsonResult.map(buildReelMarkdown).join(''\n\n'');
             markdown = `## Reels\n\nLoaded ${jsonResult.length} reel(s) from ${url}\n\n${itemsMd}`;
         }
     }
@@ -390,9 +392,13 @@ const scrapeInstagram = async (context) => {
         throw new Error(`No public Instagram data was extracted from ${url}`);
     }
 
-    log('Final result: markdown length:', markdown.length, '| jsonResult count:', jsonResult.length);
+    log(''Final result: markdown length:'', markdown.length, ''| jsonResult count:'', jsonResult.length);
     return { markdown, jsonResult };
 };
 
 
 return await scrapeInstagram(context)
+'),
+    `version` = '1.0.2',
+    `updated_at` = CAST(strftime('%s', 'now') AS INTEGER)
+WHERE `template_id` = 'instagram-scraper' AND `version` = '1.0.1';

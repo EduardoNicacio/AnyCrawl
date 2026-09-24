@@ -169,6 +169,13 @@
       "when": 1790214324451,
       "tag": "0023_instagram_profile_preload",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1790215726600,
+      "tag": "0024_instagram_profile_timeout",
+      "breakpoints": true
     }
   ]
 }

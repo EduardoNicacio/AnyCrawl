@@ -1,3 +1,6 @@
+-- Bound the legacy profile API wait to preserve a useful extraction error.
+UPDATE "templates"
+SET "custom_handlers" = jsonb_set("custom_handlers", '{requestHandler,code,source}', to_jsonb($ig_handler$
 const extractKeyedPayloadFromHtml = (html, targetKey = 'xdt_api__v1__profile_timeline') => {
     const results = [];
     if (typeof html !== 'string' || html.length === 0) return results;
@@ -396,3 +399,8 @@ const scrapeInstagram = async (context) => {
 
 
 return await scrapeInstagram(context)
+
+$ig_handler$::text), true),
+    "version" = '1.0.2',
+    "updated_at" = NOW()
+WHERE "template_id" = 'instagram-scraper' AND "version" = '1.0.1';
