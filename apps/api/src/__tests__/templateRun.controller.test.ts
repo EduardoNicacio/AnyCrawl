@@ -14,6 +14,7 @@ const requestTemplateRunCancel = jest.fn<(id: string) => Promise<any>>();
 const finalizeTemplateRun = jest.fn<(id: string, s: string, e?: any) => Promise<any>>();
 const getJob = jest.fn<(id: string) => Promise<any>>();
 const getJobByUuid = jest.fn<(id: string) => Promise<any>>();
+const getJobResultsPaginated = jest.fn<(id: string, skip: number, limit: number, status?: string) => Promise<any[]>>();
 const failedJob = jest.fn(async () => ({}));
 const getDatasetRunByProducer = jest.fn<(db: any, datasetId: string, producerType: string, producerId: string) => Promise<any>>();
 const getDB = jest.fn(async () => ({}));
@@ -56,6 +57,7 @@ jest.unstable_mockModule("@anycrawl/db", () => ({
     finalizeTemplateRun,
     getJob,
     getJobByUuid,
+    getJobResultsPaginated,
     failedJob,
     getDatasetRunByProducer,
     getDB,
@@ -66,6 +68,7 @@ jest.unstable_mockModule("@anycrawl/db", () => ({
     assertDatasetWritable,
     DatasetWriteError,
     STATUS: { PENDING: "pending", COMPLETED: "completed", FAILED: "failed", CANCELLED: "cancelled" },
+    JOB_RESULT_STATUS: { SUCCESS: "success", FAILED: "failed" },
     TEMPLATE_RUN_TERMINAL_STATUSES: ["completed", "partial", "failed", "cancelled"],
 }));
 
@@ -288,9 +291,9 @@ describe("TemplateRunController.create", () => {
             httpStatus: 200,
             result: { markdown: "hi" },
             jobId: "job-1",
-            datasetOutcome: { dataset_id: "ds-1", dataset_run_id: "dr-1", status: "completed" },
+            datasetOutcome: null,
         });
-        getTemplateRun.mockResolvedValue({ ...queuedRun, status: "completed", datasetId: "ds-1", datasetRunUuid: "dr-1" });
+        getTemplateRun.mockResolvedValue({ ...queuedRun, status: "completed" });
 
         const res = mockRes();
         await new TemplateRunController().create(mockReq("content-extractor", {
@@ -306,22 +309,36 @@ describe("TemplateRunController.create", () => {
         expect(passed.delegatedBody.template_id).toBe("content-extractor");
         expect(passed.delegatedBody.run_options).toBeUndefined();
         expect(passed.delegatedBody.delivery).toBeUndefined();
-        expect(passed.delegatedBody.output.dataset.create.name).toBe("Content Extractor · run-uuid-1");
+        expect(passed.delegatedBody.output).toBeUndefined();
         expect(passed.run).toBe(queuedRun);
         expect(res.statusCode).toBe(201);
         expect(res.body.success).toBe(true);
         expect(res.body.data.run_id).toBe("run-uuid-1");
         expect(res.body.data.status).toBe("completed");
-        expect(res.body.data.dataset_id).toBe("ds-1");
+        expect(res.body.data.dataset_id).toBeNull();
         expect(res.body.data.result).toEqual({ markdown: "hi" });
+    });
+
+    it("preserves an explicit new Dataset destination for a single run", async () => {
+        resolveTemplateByRef.mockResolvedValue(scrapeTemplate);
+        executeSingleRun.mockResolvedValue({ ok: true, httpStatus: 200, result: {}, jobId: "job-1", datasetOutcome: null });
+        getTemplateRun.mockResolvedValue({ ...queuedRun, status: "completed" });
+
+        await new TemplateRunController().create(mockReq("content-extractor", {
+            url: "https://x.com",
+            output: { dataset: { create: { name: "Saved results" } } },
+        }), mockRes());
+
+        const passed = executeSingleRun.mock.calls[0]![0] as any;
+        expect(passed.delegatedBody.output).toEqual({ dataset: { create: { name: "Saved results" } } });
     });
 
     it("dispatches a single crawl asynchronously and returns running (202)", async () => {
         resolveTemplateByRef.mockResolvedValue(crawlTemplate);
-        startCrawlRun.mockResolvedValue({ ok: true, httpStatus: 200, jobId: "job-2", datasetId: "ds-2", body: {} });
+        startCrawlRun.mockResolvedValue({ ok: true, httpStatus: 200, jobId: "job-2", datasetId: null, body: {} });
         getTemplateRun.mockResolvedValue({
             ...queuedRun, status: "running", legacyJobUuid: "database-job-uuid",
-            statistics: { legacy_job_id: "job-2" }, datasetId: "ds-2",
+            statistics: { legacy_job_id: "job-2" }, datasetId: null,
         });
 
         const res = mockRes();
@@ -332,7 +349,8 @@ describe("TemplateRunController.create", () => {
         expect(res.statusCode).toBe(202);
         expect(res.body.data.status).toBe("running");
         expect(res.body.data.legacy_job_id).toBe("job-2");
-        expect(res.body.data.dataset_id).toBe("ds-2");
+        expect(res.body.data.dataset_id).toBeNull();
+        expect((startCrawlRun.mock.calls[0]![0] as any).delegatedBody.output).toBeUndefined();
     });
 
     it("finalizes a single Run if the legacy adapter throws", async () => {
@@ -503,5 +521,63 @@ describe("TemplateRunController.get / cancel", () => {
 
         expect(requestTemplateRunCancel).not.toHaveBeenCalled();
         expect(res.body.data.status).toBe("completed");
+    });
+});
+
+describe("TemplateRunController.output", () => {
+    it("pages successful producer results under the owned Run", async () => {
+        resolveTemplateByRef.mockResolvedValue(scrapeTemplate);
+        getOwnedTemplateRun.mockResolvedValue({ ...queuedRun, status: "completed", legacyJobUuid: "db-job-uuid" });
+        getJobByUuid.mockResolvedValue({ jobId: "queue-job-id" });
+        getJobResultsPaginated.mockResolvedValue([
+            { uuid: "result-1", url: "https://a.com", data: { title: "A" }, createdAt: new Date("2026-09-24T00:00:00Z"), updatedAt: new Date("2026-09-24T00:00:00Z") },
+            { uuid: "result-2", url: "https://b.com", data: { title: "B" }, createdAt: new Date("2026-09-24T00:00:01Z"), updatedAt: new Date("2026-09-24T00:00:01Z") },
+        ]);
+
+        const req = mockReq("content-extractor");
+        req.params.run_id = "run-uuid-1";
+        req.query = { limit: "1" };
+        const res = mockRes();
+        await new TemplateRunController().output(req, res);
+
+        expect(getJobByUuid).toHaveBeenCalledWith("db-job-uuid");
+        expect(getJobResultsPaginated).toHaveBeenCalledWith("queue-job-id", 0, 2, "success");
+        expect(res.body.data.items).toEqual([expect.objectContaining({
+            itemKey: "result-1", sourceUrl: "https://a.com", document: { title: "A" },
+        })]);
+        expect(res.body.data.next_cursor).toBeTruthy();
+
+        req.query.cursor = res.body.data.next_cursor;
+        getJobResultsPaginated.mockResolvedValue([{
+            uuid: "result-2", url: "https://b.com", data: { title: "B" },
+            createdAt: new Date("2026-09-24T00:00:01Z"), updatedAt: new Date("2026-09-24T00:00:01Z"),
+        }]);
+        const nextRes = mockRes();
+        await new TemplateRunController().output(req, nextRes);
+        expect(getJobResultsPaginated).toHaveBeenLastCalledWith("queue-job-id", 1, 2, "success");
+        expect(nextRes.body.data.next_cursor).toBeNull();
+    });
+
+    it("does not expose another owner's output", async () => {
+        resolveTemplateByRef.mockResolvedValue(scrapeTemplate);
+        getOwnedTemplateRun.mockResolvedValue(null);
+        const req = mockReq("content-extractor");
+        req.params.run_id = "other-run";
+        const res = mockRes();
+        await new TemplateRunController().output(req, res);
+        expect(res.statusCode).toBe(404);
+        expect(getJobResultsPaginated).not.toHaveBeenCalled();
+    });
+
+    it("rejects a cursor from another Run", async () => {
+        resolveTemplateByRef.mockResolvedValue(scrapeTemplate);
+        getOwnedTemplateRun.mockResolvedValue({ ...queuedRun, status: "completed", legacyJobUuid: "db-job-uuid" });
+        const req = mockReq("content-extractor");
+        req.params.run_id = "run-uuid-1";
+        req.query = { cursor: Buffer.from(JSON.stringify(["different-run", 20])).toString("base64url") };
+        const res = mockRes();
+        await new TemplateRunController().output(req, res);
+        expect(res.statusCode).toBe(400);
+        expect(getJobResultsPaginated).not.toHaveBeenCalled();
     });
 });

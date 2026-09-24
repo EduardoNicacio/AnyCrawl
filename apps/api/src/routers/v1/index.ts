@@ -50,6 +50,7 @@ router.post("/template/:templateRef/runs/:run_id/cancel", controllerWrapper(temp
 router.get("/template/:templateRef/runs/:run_id/events", controllerWrapper(templateRunController.events));
 router.get("/template/:templateRef/runs/:run_id/warnings", controllerWrapper(templateRunController.warnings));
 router.get("/template/:templateRef/runs/:run_id/dataset", controllerWrapper(templateRunController.dataset));
+router.get("/template/:templateRef/runs/:run_id/output", controllerWrapper(templateRunController.output));
 
 // Batch scrape routes (async job model)
 router.post("/batch/scrape", checkCreditsMiddleware, planFeatureMiddleware, concurrencyMiddleware, controllerWrapper(batchScrapeController.start));
