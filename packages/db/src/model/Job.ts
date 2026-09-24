@@ -315,8 +315,9 @@ export class Job {
      * @param jobId - The job ID
      * @param skip - Number of records to skip
      * @param limit - Max number of records to return
+     * @param status - Optional result status filter
      */
-    public static async getJobResultsPaginated(jobId: string, skip: number, limit: number) {
+    public static async getJobResultsPaginated(jobId: string, skip: number, limit: number, status?: JobResultStatus) {
         const db = await getDB();
 
         const job = await Job.get(jobId);
@@ -327,8 +328,11 @@ export class Job {
         return await db
             .select()
             .from(schemas.jobResults)
-            .where(eq(schemas.jobResults.jobUuid, job.uuid))
-            .orderBy(asc(schemas.jobResults.createdAt))
+            .where(and(
+                eq(schemas.jobResults.jobUuid, job.uuid),
+                status ? eq(schemas.jobResults.status, status) : undefined
+            ))
+            .orderBy(asc(schemas.jobResults.createdAt), asc(schemas.jobResults.uuid))
             .limit(limit)
             .offset(skip);
     }

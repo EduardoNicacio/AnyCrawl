@@ -15,10 +15,12 @@ import {
     requestTemplateRunCancel,
     finalizeTemplateRun,
     getJobByUuid,
+    getJobResultsPaginated,
     getDatasetRunByProducer,
     updateTemplateRunStatus,
     computeDocumentHash,
     STATUS,
+    JOB_RESULT_STATUS,
     TEMPLATE_RUN_TERMINAL_STATUSES,
 } from "@anycrawl/db";
 import { TemplateHandler } from "../../utils/templateHandler.js";
@@ -64,6 +66,7 @@ const runCreateSchema = z
  *   GET  /v1/template/{ref}/runs/{run_id}/events
  *   GET  /v1/template/{ref}/runs/{run_id}/warnings
  *   GET  /v1/template/{ref}/runs/{run_id}/dataset
+ *   GET  /v1/template/{ref}/runs/{run_id}/output
  *
  * `create` never re-implements variable merging, validation, handlers or billing:
  * it freezes the current revision, snapshots the input, persists a `template_runs`
@@ -216,7 +219,7 @@ export class TemplateRunController {
             // Assign a durable destination after the idempotency check. Naming it
             // from the persisted Run ID gives each automatic dataset a stable,
             // unique name without changing the hash of a retried request.
-            if (body.output?.dataset === undefined) {
+            if (isOrchestrated && body.output?.dataset === undefined) {
                 delegatedBody.output = {
                     ...body.output,
                     dataset: { create: { name: `${template.name} · ${run.uuid}` } },
@@ -367,6 +370,56 @@ export class TemplateRunController {
                 data: {
                     ...this.formatRun(run, req.params.templateRef!, template.templateId),
                     input: run.inputSnapshot ?? null,
+                },
+            });
+        } catch (error) {
+            this.handleError(error, res);
+        }
+    };
+
+    /** GET /v1/template/{ref}/runs/{run_id}/output */
+    public output = async (req: RequestWithAuth, res: Response): Promise<void> => {
+        try {
+            const loaded = await this.loadOwnedRun(req, res);
+            if (!loaded) return;
+            const { run } = loaded;
+            const limit = this.parseLimit(req.query.limit);
+            let skip = 0;
+            const rawCursor = this.strParam(req.query.cursor);
+            if (rawCursor) {
+                try {
+                    if (rawCursor.length > 256) throw new Error("Invalid output cursor");
+                    const [cursorRunId, cursorOffset] = JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8"));
+                    if (cursorRunId !== run.uuid || !Number.isSafeInteger(cursorOffset) || cursorOffset < 0 || cursorOffset > 100_000) {
+                        throw new Error("Invalid output cursor");
+                    }
+                    skip = cursorOffset;
+                } catch {
+                    this.badRequest(res, "invalid_cursor", "Invalid output cursor");
+                    return;
+                }
+            }
+
+            const job = run.legacyJobUuid ? await getJobByUuid(run.legacyJobUuid) : null;
+            const rows = job
+                ? await getJobResultsPaginated(job.jobId, skip, limit + 1, JOB_RESULT_STATUS.SUCCESS)
+                : [];
+            const hasMore = rows.length > limit;
+            const items = rows.slice(0, limit).map((row: any) => ({
+                itemKey: row.uuid,
+                sourceUrl: row.url,
+                document: row.data,
+                firstSeenAt: this.iso(row.createdAt),
+                lastSeenAt: this.iso(row.updatedAt),
+                isActive: true,
+            }));
+            res.json({
+                success: true,
+                data: {
+                    items,
+                    next_cursor: hasMore
+                        ? Buffer.from(JSON.stringify([run.uuid, skip + limit]), "utf8").toString("base64url")
+                        : null,
                 },
             });
         } catch (error) {
@@ -655,6 +708,7 @@ export class TemplateRunController {
                 events: `${base}/events`,
                 warnings: `${base}/warnings`,
                 dataset: `${base}/dataset`,
+                output: `${base}/output`,
                 cancel: `${base}/cancel`,
             },
         };
