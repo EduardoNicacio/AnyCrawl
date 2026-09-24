@@ -30,7 +30,7 @@ if [ ! -e "$FIRST_TIME_MIGRATION" ] || [ "$MIGRATE_DATABASE" = "true" ]; then
 fi
 
 echo "Starting ${NODE_ENV:-production} server..."
-echo "DB type: $ANYCRAWL_API_DB_TYPE | Connection: $ANYCRAWL_API_DB_CONNECTION | Port: $ANYCRAWL_API_PORT | Engines: ${ANYCRAWL_AVAILABLE_ENGINES:-playwright,cheerio,puppeteer}"
+echo "DB type: $ANYCRAWL_API_DB_TYPE | Port: $ANYCRAWL_API_PORT | Engines: ${ANYCRAWL_AVAILABLE_ENGINES:-playwright,cheerio,puppeteer}"
 
 # Start the API server
 if [ "$NODE_ENV" = "development" ]; then
