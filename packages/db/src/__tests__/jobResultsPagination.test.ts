@@ -24,7 +24,7 @@ connection.exec('CREATE TABLE job_results (uuid TEXT PRIMARY KEY, job_uuid TEXT,
 const db = drizzle(connection);
 jest.unstable_mockModule('../index.js', () => ({ getDB: async () => db, schemas: { jobs, jobResults }, eq, sql, STATUS }));
 const { Job } = await import('../model/Job.js');
-afterAll(() => connection.close());
+afterAll(() => { connection.close(); });
 
 describe('job result pagination for Run output', () => {
     it('returns only successful rows for the backing job in stable order', async () => {

@@ -176,6 +176,13 @@
       "when": 1790215726600,
       "tag": "0024_instagram_profile_timeout",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1790248405724,
+      "tag": "0025_instagram_public_media",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,7 @@
   "logo": "https://ac-public.anycrawl.dev/instagram-scraper.png",
   "templateId": "instagram-scraper",
   "name": "Instagram Scraper",
-  "description": "Scrape and download Instagram posts, profiles, hashtags, reels, photos, and comments. Get data from Instagram using one or more Instagram URLs. Export scraped data, run the scraper via API, schedule and monitor runs or integrate with other tools.",
+  "description": "Extract public Instagram profiles and their currently visible media, or a direct public post or Reel with visible comments. Results depend on what Instagram exposes to logged-out visitors.",
   "tags": [
     "instagram scraper",
     "scrape instagram​",
@@ -11,7 +11,7 @@
     "instagram web scraper​",
     "instagram profile scraper​"
   ],
-  "version": "1.0.0",
+  "version": "1.0.3",
   "templateType": "scrape",
   "pricing": { "perCall": 1, "currency": "credits" },
   "reqOptions": {
@@ -20,14 +20,7 @@
     "timeout": 60000,
     "retry": true,
     "wait_until": "domcontentloaded",
-    "wait_for": 500,
-    "wait_for_selector": [
-      {
-        "selector": "[role=\"tablist\"]",
-        "state": "visible",
-        "timeout": 8000
-      }
-    ]
+    "wait_for": 500
   },
   "handlers": {
     "requestHandler": {
@@ -88,10 +81,10 @@
   "reviewedBy": "system-admin",
   "status": "published",
   "reviewStatus": "approved",
-  "reviewNotes": "Initial version",
+  "reviewNotes": "Public profile timeline and direct post/Reel preload extraction",
   "trusted": true,
   "createdAt": "2025-10-22T00:00:00.000Z",
-  "updatedAt": "2025-10-22T00:00:00.000Z",
+  "updatedAt": "2026-09-24T00:00:00.000Z",
   "publishedAt": "2025-10-22T00:00:00.000Z",
   "reviewedAt": "2025-10-22T00:00:00.000Z",
   "output": { "sqlPath": "instagram-scraper.sql" }
