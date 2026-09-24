@@ -490,7 +490,7 @@ const scrapeInstagram = async (context) => {
 
 return await scrapeInstagram(context)
 
-$ig_handler$::text),
+$ig_handler$::text)),
     "req_options" = '{"engine":"playwright","formats":["markdown"],"timeout":60000,"retry":true,"wait_until":"domcontentloaded","wait_for":500}'::jsonb,
     "description" = 'Extract public Instagram profiles and their currently visible media, or a direct public post or Reel with visible comments. Results depend on what Instagram exposes to logged-out visitors.',
     "review_notes" = 'Public profile timeline and direct post/Reel preload extraction',

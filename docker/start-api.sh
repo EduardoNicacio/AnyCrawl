@@ -21,12 +21,12 @@ MIGRATE_DATABASE="${MIGRATE_DATABASE:-false}"
 FIRST_TIME_MIGRATION="/usr/src/app/FIRST_TIME_MIGRATION_${NODE_ENV:-production}"
 if [ ! -e "$FIRST_TIME_MIGRATION" ] || [ "$MIGRATE_DATABASE" = "true" ]; then
   echo "Initialize database migration (once per environment)"
-  # Touch flag early to avoid duplicate runs under supervisor restarts
-  touch "$FIRST_TIME_MIGRATION"
   # Run migration using locally installed drizzle-kit (no pnpm dlx)
   cd /usr/src/app/packages/db
   pnpm db:migrate:docker
   cd /usr/src/app
+  # A failed migration must be retried on restart and must not become healthy.
+  touch "$FIRST_TIME_MIGRATION"
 fi
 
 echo "Starting ${NODE_ENV:-production} server..."
